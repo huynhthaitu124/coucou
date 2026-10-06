@@ -3548,6 +3548,7 @@ struct ContextChip: View {
 struct ProactiveSuggestionInlineCard: View {
     let suggestion: ProactiveSuggestion
     @ObservedObject var state: AppState
+    @State private var isHovered = false
 
     var body: some View {
         HStack(spacing: 10) {
@@ -3635,6 +3636,23 @@ struct ProactiveSuggestionInlineCard: View {
                     lineWidth: 1
                 )
         )
+        .overlay(alignment: .bottom) {
+            SuggestionProgressBar(
+                totalWidth: nil,
+                duration: 10.0,
+                isPaused: isHovered
+            ) {
+                withAnimation(.spring(response: 0.35, dampingFraction: 0.78)) {
+                    CoucouSentinel.shared.dismissSuggestion(state: state)
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.bottom, 2)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .onHover { hovering in
+            isHovered = hovering
+        }
         .padding(.horizontal, 4)
         .padding(.bottom, 2)
     }

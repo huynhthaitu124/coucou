@@ -19,6 +19,75 @@ struct IslandRootView: View {
     }
 }
 
+// MARK: - Suggestion Bottom Border Progress Bar (Runs inward towards center)
+
+struct SuggestionProgressBar: View {
+    var totalWidth: CGFloat? = nil
+    let duration: TimeInterval
+    var isPaused: Bool = false
+    let onFinished: () -> Void
+
+    @State private var progress: CGFloat = 1.0
+    @State private var elapsed: TimeInterval = 0
+    @State private var timerTask: Task<Void, Never>? = nil
+
+    var body: some View {
+        GeometryReader { geo in
+            let barWidth = totalWidth ?? geo.size.width
+            ZStack(alignment: .center) {
+                // Subtle track line at bottom border
+                Capsule()
+                    .fill(Color.white.opacity(0.15))
+                    .frame(width: barWidth, height: 1.5)
+
+                // Pure white glowing progress bar running gradually inward towards center
+                Capsule()
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                Color.white.opacity(0.8),
+                                Color.white,
+                                Color.white.opacity(0.8)
+                            ],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                    )
+                    .frame(width: max(0, barWidth * progress), height: 2)
+                    .shadow(color: Color.white.opacity(0.9), radius: 3, x: 0, y: 0)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+        }
+        .frame(height: 2.5)
+        .onAppear {
+            startTimer()
+        }
+        .onDisappear {
+            timerTask?.cancel()
+        }
+    }
+
+    private func startTimer() {
+        timerTask?.cancel()
+        let stepSeconds: TimeInterval = 0.025 // 40 FPS, silky smooth
+        timerTask = Task { @MainActor in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 25_000_000)
+                guard !Task.isCancelled else { break }
+                if !isPaused {
+                    elapsed += stepSeconds
+                    let remaining = max(0.0, 1.0 - (elapsed / duration))
+                    progress = CGFloat(remaining)
+                    if remaining <= 0.001 {
+                        onFinished()
+                        break
+                    }
+                }
+            }
+        }
+    }
+}
+
 // MARK: - Notch Live Activity View (Apple Dynamic Island style inside the Notch)
 
 struct NotchLiveActivityView: View {
@@ -26,6 +95,8 @@ struct NotchLiveActivityView: View {
     @ObservedObject var state: AppState
     let islandW: CGFloat
     let islandH: CGFloat
+
+    @State private var isHovered = false
 
     /// Calculate the hardware camera notch dangerous area (MacBook notch height)
     private var safeAreaTop: CGFloat {
@@ -92,9 +163,26 @@ struct NotchLiveActivityView: View {
                 .buttonStyle(.plain)
             }
             .padding(.horizontal, 16)
-            .frame(height: 38)
+            .frame(height: 35)
+
+            Spacer(minLength: 0)
+
+            // White progress bar running gradually inward to center at bottom border
+            SuggestionProgressBar(
+                totalWidth: max(60, islandW - 28),
+                duration: 10.0,
+                isPaused: isHovered
+            ) {
+                withAnimation(.spring(response: 0.35, dampingFraction: 0.78)) {
+                    CoucouSentinel.shared.dismissSuggestion(state: state)
+                }
+            }
+            .padding(.bottom, 2)
         }
         .frame(width: islandW, height: islandH, alignment: .top)
+        .onHover { hovering in
+            isHovered = hovering
+        }
     }
 }
 
