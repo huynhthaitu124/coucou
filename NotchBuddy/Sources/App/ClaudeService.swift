@@ -194,9 +194,11 @@ final class ClaudeService {
     }
 
     func restoreConversation(messages: [ChatMessage]) {
-        conversationMessages = messages.map { msg in
+        conversationMessages = messages.compactMap { msg in
+            let text = msg.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { return nil }
             let role = (msg.role == .user) ? "user" : "assistant"
-            return ["role": role, "content": msg.content]
+            return ["role": role, "content": text]
         }
     }
 
@@ -213,6 +215,9 @@ final class ClaudeService {
        - `bash`: Quick shell commands (e.g. check battery, disk space, find files, ps/kill, git status, open apps, inspect files).
        - `applescript`: Control native macOS apps (Finder, Music, Safari, active window, System Events).
        - `read_file` / `write_file`: Quick file inspections or edits.
+
+    CONVERSATIONAL MEMORY & CONTINUITY:
+    - ALWAYS pay close attention to prior messages in the conversation history. When the user says "thử lại chuỗi action khi nãy", "làm lại chuỗi action openproject", "làm lại", "tiếp tục", or refers to something discussed earlier, look at the previous turns in the history and execute or adjust that specific task without asking them to repeat details you already know.
 
     CREDIT SAVING & BEHAVIOR RULES:
     - To click or interact with UI buttons/controls: ALWAYS prefer `press_ui_element(title: ...)` directly, OR call `inspect_window` first to obtain the exact `[center: (x, y)]` coordinates before calling `computer_action`. NEVER guess coordinates!
@@ -393,9 +398,9 @@ final class ClaudeService {
         }
         guard let url = URL(string: baseURL) else { return }
 
-        // Build messages: system + recent conversation history (last 6 to minimize input credit) + new user turn
+        // Build messages: system + recent conversation history (last 40 to preserve long multi-turn context) + new user turn
         var msgs: [[String: Any]] = [["role": "system", "content": systemPrompt]]
-        let recentHistory = conversationMessages.suffix(6)
+        let recentHistory = conversationMessages.suffix(40)
         for m in recentHistory {
             var simplified = m
             if let content = m["content"] as? [[String: Any]],

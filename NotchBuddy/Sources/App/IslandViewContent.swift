@@ -921,8 +921,10 @@ struct PromptView: View {
         guard !query.isEmpty else { return }
         text = ""
         focused = false
+        UserDefaults.standard.set(false, forKey: "explicitNewSession")
         state.chatHistory.append(ChatMessage(role: .user, content: query))
         state.stateOverride = .thinking
+        state.archiveCurrentSession()
         #if !APPSTORE
         if case .file = state.promptContext {
             // Keep user-attached file

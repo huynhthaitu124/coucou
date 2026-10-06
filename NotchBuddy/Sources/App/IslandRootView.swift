@@ -739,6 +739,8 @@ struct IslandHeader: View {
                             state.promptContext = nil
                             state.dismissedContextKey = nil
                             ClaudeService.shared.clearConversation()
+                            UserDefaults.standard.set(true, forKey: "explicitNewSession")
+                            UserDefaults.standard.removeObject(forKey: "savedActiveSessionId")
                         }
                     }) {
                         HStack(spacing: 4) {

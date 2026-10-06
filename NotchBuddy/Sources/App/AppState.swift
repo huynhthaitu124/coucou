@@ -268,8 +268,10 @@ final class AppState: ObservableObject {
 
     func archiveCurrentSession() {
         guard !chatHistory.isEmpty else { return }
-        let savedMsgs = chatHistory.map { msg -> SavedChatMessage in
-            SavedChatMessage(
+        let savedMsgs = chatHistory.compactMap { msg -> SavedChatMessage? in
+            let text = msg.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            if text.isEmpty && msg.steps.isEmpty { return nil }
+            return SavedChatMessage(
                 id: msg.id,
                 role: (msg.role == .user) ? "user" : "assistant",
                 content: msg.content,
@@ -279,19 +281,26 @@ final class AppState: ObservableObject {
                 creditsUsed: msg.creditsUsed
             )
         }
+        guard !savedMsgs.isEmpty else { return }
+
         let firstUser = chatHistory.first(where: { $0.role == .user })?.content ?? "Phiên chat mới"
         let cleanTitle = String(firstUser.prefix(45)).trimmingCharacters(in: .whitespacesAndNewlines)
         let finalTitle = cleanTitle.isEmpty ? "Phiên chat" : cleanTitle
 
         if let currId = currentSessionId, let idx = sessions.firstIndex(where: { $0.id == currId }) {
-            sessions[idx].messages = savedMsgs
-            sessions[idx].updatedAt = Date()
-            sessions[idx].title = finalTitle
+            var updated = sessions.remove(at: idx)
+            updated.messages = savedMsgs
+            updated.updatedAt = Date()
+            updated.title = finalTitle
+            sessions.insert(updated, at: 0)
         } else {
             let newId = currentSessionId ?? UUID()
             currentSessionId = newId
             let newSession = ChatSession(id: newId, title: finalTitle, createdAt: Date(), updatedAt: Date(), messages: savedMsgs)
             sessions.insert(newSession, at: 0)
+        }
+        if sessions.count > 100 {
+            sessions = Array(sessions.prefix(100))
         }
         saveSessionsToDisk()
     }
@@ -299,6 +308,8 @@ final class AppState: ObservableObject {
     func loadSession(_ session: ChatSession) {
         archiveCurrentSession()
         currentSessionId = session.id
+        UserDefaults.standard.set(session.id.uuidString, forKey: "savedActiveSessionId")
+        UserDefaults.standard.set(false, forKey: "explicitNewSession")
         chatHistory = session.messages.map { sMsg in
             ChatMessage(
                 id: sMsg.id,
@@ -321,6 +332,7 @@ final class AppState: ObservableObject {
             currentSessionId = nil
             chatHistory.removeAll()
             ClaudeService.shared.clearConversation()
+            UserDefaults.standard.removeObject(forKey: "savedActiveSessionId")
         }
         saveSessionsToDisk()
     }
@@ -328,6 +340,9 @@ final class AppState: ObservableObject {
     func clearAllSessions() {
         sessions.removeAll()
         currentSessionId = nil
+        chatHistory.removeAll()
+        ClaudeService.shared.clearConversation()
+        UserDefaults.standard.removeObject(forKey: "savedActiveSessionId")
         saveSessionsToDisk()
     }
 
@@ -335,12 +350,28 @@ final class AppState: ObservableObject {
         if let data = try? JSONEncoder().encode(sessions) {
             UserDefaults.standard.set(data, forKey: "savedChatSessions")
         }
+        if let currId = currentSessionId {
+            UserDefaults.standard.set(currId.uuidString, forKey: "savedActiveSessionId")
+        } else {
+            UserDefaults.standard.removeObject(forKey: "savedActiveSessionId")
+        }
     }
 
     private func loadSessionsFromDisk() {
         if let data = UserDefaults.standard.data(forKey: "savedChatSessions"),
            let loaded = try? JSONDecoder().decode([ChatSession].self, from: data) {
             sessions = loaded
+        }
+        let savedActiveIdString = UserDefaults.standard.string(forKey: "savedActiveSessionId")
+        let activeUUID = savedActiveIdString.flatMap { UUID(uuidString: $0) }
+        let isExplicitNew = UserDefaults.standard.bool(forKey: "explicitNewSession")
+
+        if !isExplicitNew {
+            if let targetId = activeUUID, let found = sessions.first(where: { $0.id == targetId }) {
+                loadSession(found)
+            } else if let latest = sessions.first, !latest.messages.isEmpty {
+                loadSession(latest)
+            }
         }
     }
 
