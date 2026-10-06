@@ -150,9 +150,23 @@ final class AppState: ObservableObject {
         }
     }
 
-    // Context for prompt (window attach / file)
+    // Context for prompt (window attach / file / clipboard)
     @Published var promptContext: PromptContext? = nil
+    @Published var activeWindowContext: PromptContext? = nil
+    @Published var recentClipboardContext: PromptContext? = nil
+    @Published var recentClipboardTimestamp: Date? = nil
     var dismissedContextKey: String? = nil
+
+    /// Uses SystemOne / JEV to classify and fuse overlapping contexts (e.g. copied text + open browser)
+    func resolveContextWithJev(query: String? = nil) {
+        if case .file = self.promptContext { return }
+        self.promptContext = SystemOneEngine.shared.classifyAndResolveContext(
+            windowCtx: self.activeWindowContext,
+            clipboardCtx: self.recentClipboardContext,
+            clipboardTime: self.recentClipboardTimestamp,
+            userQuery: query
+        )
+    }
 
     // Proactive Autonomous AI Suggestion (from 24/7 Local Observer)
     @Published var proactiveSuggestion: ProactiveSuggestion? = nil
@@ -523,10 +537,38 @@ final class AppState: ObservableObject {
 
 // MARK: - Supporting types
 
+public enum JevContextRelation: String, Codable, Equatable {
+    case webSelection       = "web_selection"        // Text copied directly from the currently active web page
+    case crossAppResearch   = "cross_app_research"   // Copied from code/terminal/doc, now viewing browser/web
+    case webToEditor        = "web_to_editor"        // Copied from web browser, now viewing code editor/terminal
+    case appSwitchBridge    = "app_switch_bridge"    // Copied from app A, now viewing app B
+    case dualContext        = "dual_context"         // Both contexts active and equally relevant
+
+    public var displayName: String {
+        switch self {
+        case .webSelection: return "Trích đoạn trang web"
+        case .crossAppResearch: return "Web + Mã nguồn/Log"
+        case .webToEditor: return "Tài liệu web + Trình soạn thảo"
+        case .appSwitchBridge: return "Đa ứng dụng kết hợp"
+        case .dualContext: return "Ngữ cảnh kết hợp"
+        }
+    }
+}
+
 public enum PromptContext: Equatable {
     case window(appName: String, title: String, url: String?)
     case file(name: String, fileURL: URL?)
     case clipboard(sourceApp: String, sourceTitle: String, sourceURL: String?, snippet: String)
+    case composite(
+        windowApp: String,
+        windowTitle: String,
+        windowURL: String?,
+        clipApp: String,
+        clipTitle: String,
+        clipURL: String?,
+        snippet: String,
+        relation: JevContextRelation
+    )
 
     public var contextKey: String {
         switch self {
@@ -536,6 +578,8 @@ public enum PromptContext: Equatable {
             return "file:\(name):\(url?.path ?? "")"
         case .clipboard(let sourceApp, let sourceTitle, let sourceURL, let snippet):
             return "clipboard:\(sourceApp):\(sourceTitle):\(sourceURL ?? ""):\(snippet.prefix(50))"
+        case .composite(let wApp, let wTitle, let wUrl, let cApp, _, _, let snippet, let rel):
+            return "composite:\(rel.rawValue):\(wApp):\(wTitle):\(wUrl ?? ""):\(cApp):\(snippet.prefix(50))"
         }
     }
 }

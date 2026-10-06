@@ -75,6 +75,17 @@ public final class SystemOneEngine {
                         sourceEngine: "CoreML-ANE"
                     )
                 }
+            case .composite(let wApp, _, _, _, _, _, _, _):
+                if q.contains("đọc") || q.contains("xem") || q.contains("màn hình") || q.contains("cửa sổ") || q.contains("inspect") || q.contains("check") {
+                    let elapsed = (CFAbsoluteTimeGetCurrent() - startTime) * 1000
+                    return SystemOneDecision(
+                        action: .inspectWindow,
+                        target: wApp.isEmpty ? nil : wApp,
+                        confidence: 0.95,
+                        executionTimeMs: elapsed,
+                        sourceEngine: "CoreML-ANE"
+                    )
+                }
             }
         }
 
@@ -147,5 +158,127 @@ public final class SystemOneEngine {
             executionTimeMs: elapsed,
             sourceEngine: "CoreML-ANE"
         )
+    }
+
+    /// Evaluates active window vs recent clipboard using JEV non-autoregressive classification rules.
+    /// Resolves potential context collisions (e.g. user copied text AND opened browser) into a clean,
+    /// typed PromptContext (either window, clipboard, or composite).
+    public func classifyAndResolveContext(
+        windowCtx: PromptContext?,
+        clipboardCtx: PromptContext?,
+        clipboardTime: Date?,
+        userQuery: String? = nil
+    ) -> PromptContext? {
+        // 1. If only one exists, return it directly
+        guard let windowCtx else { return clipboardCtx }
+        guard let clipboardCtx else { return windowCtx }
+
+        // Extract window info
+        guard case .window(let wApp, let wTitle, let wUrl) = windowCtx else {
+            return windowCtx
+        }
+        // Extract clipboard info
+        guard case .clipboard(let cApp, let cTitle, let cUrl, let snippet) = clipboardCtx else {
+            return windowCtx
+        }
+
+        let q = userQuery?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        let now = Date()
+        let clipAgeSeconds = clipboardTime.map { now.timeIntervalSince($0) } ?? 0
+
+        // 2. Query-directed override (if user explicitly refers to one or both)
+        if !q.isEmpty {
+            let isWindowIntent = q.contains("trang này") || q.contains("web này") || q.contains("nút") ||
+                                 q.contains("màn hình") || q.contains("giao diện") || q.contains("click") ||
+                                 q.contains("bấm") || q.contains("đọc web") || q.contains("inspect")
+            let isClipIntent = q.contains("vừa copy") || q.contains("đoạn này") || q.contains("clipboard") ||
+                               q.contains("lỗi này") || q.contains("code này") || q.contains("dịch đoạn") ||
+                               q.contains("giải thích đoạn")
+
+            if isWindowIntent && !isClipIntent {
+                return windowCtx
+            }
+            if isClipIntent && !isWindowIntent {
+                return clipboardCtx
+            }
+        }
+
+        // 3. Stale Clipboard Check (if copy was > 120 seconds ago, decay to active window)
+        if clipAgeSeconds > 120 {
+            return windowCtx
+        }
+
+        // 4. Intra-App / Intra-Page Selection Check
+        // If user copied text FROM the currently active web page or app:
+        let isSameURL = (wUrl != nil && cUrl != nil && !wUrl!.isEmpty && wUrl == cUrl)
+        let isSameApp = (!wApp.isEmpty && wApp.localizedCaseInsensitiveCompare(cApp) == .orderedSame)
+
+        if isSameURL || isSameApp {
+            // User copied text on the active webpage/app!
+            return .composite(
+                windowApp: wApp,
+                windowTitle: wTitle,
+                windowURL: wUrl,
+                clipApp: cApp,
+                clipTitle: cTitle,
+                clipURL: cUrl,
+                snippet: snippet,
+                relation: .webSelection
+            )
+        }
+
+        // 5. Cross-App Workflow Detection (e.g. IDE/Terminal copy -> Browser search/verify)
+        let devApps = ["Xcode", "Antigravity IDE", "Cursor", "Visual Studio Code", "Terminal", "iTerm2", "Warp", "Alacritty"]
+        let browserApps = ["Google Chrome", "Arc", "Safari", "Brave Browser", "Microsoft Edge", "Firefox"]
+
+        let isClipFromDev = devApps.contains { cApp.localizedCaseInsensitiveContains($0) }
+        let isWindowBrowser = browserApps.contains { wApp.localizedCaseInsensitiveContains($0) }
+        let isClipFromBrowser = browserApps.contains { cApp.localizedCaseInsensitiveContains($0) }
+        let isWindowDev = devApps.contains { wApp.localizedCaseInsensitiveContains($0) }
+
+        if isClipFromDev && isWindowBrowser {
+            // User copied code/error from dev tool, now in web browser
+            return .composite(
+                windowApp: wApp,
+                windowTitle: wTitle,
+                windowURL: wUrl,
+                clipApp: cApp,
+                clipTitle: cTitle,
+                clipURL: cUrl,
+                snippet: snippet,
+                relation: .crossAppResearch
+            )
+        }
+
+        if isClipFromBrowser && isWindowDev {
+            // User copied snippet/docs from browser, now in code editor/terminal
+            return .composite(
+                windowApp: wApp,
+                windowTitle: wTitle,
+                windowURL: wUrl,
+                clipApp: cApp,
+                clipTitle: cTitle,
+                clipURL: cUrl,
+                snippet: snippet,
+                relation: .webToEditor
+            )
+        }
+
+        // 6. Generic Bridge (both are recent within 60s)
+        if clipAgeSeconds <= 60 {
+            return .composite(
+                windowApp: wApp,
+                windowTitle: wTitle,
+                windowURL: wUrl,
+                clipApp: cApp,
+                clipTitle: cTitle,
+                clipURL: cUrl,
+                snippet: snippet,
+                relation: .appSwitchBridge
+            )
+        }
+
+        // Default to active window if clipboard is moderately aged
+        return windowCtx
     }
 }

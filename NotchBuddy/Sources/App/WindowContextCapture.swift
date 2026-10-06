@@ -378,17 +378,15 @@ public final class CoucouSentinel: ObservableObject {
             lastObservedWindowTitle = currentTitle
             state.lastExternalApp = front
 
-            // Update promptContext for active window only if not user-pinned file or recent clipboard
-            if state.promptContext == nil || (!isClipboardContext(state.promptContext) && !isFileContext(state.promptContext)) {
-                let fresh = PromptContext.window(
-                    appName: front.localizedName ?? "App",
-                    title: currentTitle.isEmpty ? (front.localizedName ?? "") : currentTitle,
-                    url: currentURL.isEmpty ? nil : currentURL
-                )
-                if state.dismissedContextKey != fresh.contextKey && state.promptContext != fresh {
-                    state.promptContext = fresh
-                }
-            }
+            let fresh = PromptContext.window(
+                appName: front.localizedName ?? "App",
+                title: currentTitle.isEmpty ? (front.localizedName ?? "") : currentTitle,
+                url: currentURL.isEmpty ? nil : currentURL
+            )
+            state.activeWindowContext = fresh
+
+            // Intelligent JEV context classification & fusion
+            state.resolveContextWithJev()
 
             scheduleDebouncedEvaluation(state: state, delayMs: 400, immediate: true)
         }
@@ -434,11 +432,17 @@ public final class CoucouSentinel: ObservableObject {
             snippet: snippet
         )
 
-        // Set prompt context immediately so chip in Coucou UI displays source
-        state.promptContext = promptCtx
+        state.recentClipboardContext = promptCtx
+        state.recentClipboardTimestamp = Date()
         state.dismissedContextKey = nil
 
+        // Intelligent JEV context classification & fusion
+        state.resolveContextWithJev()
+
         logSentinel("Clipboard copy detected from [\(sourceApp)]: \"\(sourceTitle)\", url=\(sourceURL ?? "nil"), len=\(copiedText.count)")
+        if case .composite(_, _, _, _, _, _, _, let rel) = state.promptContext {
+            logSentinel("JEV classified composite context: \(rel.displayName)")
+        }
 
         // Subtle bot squash & blink on copy detection
         NotificationCenter.default.post(name: .botSquash, object: nil)
@@ -449,7 +453,7 @@ public final class CoucouSentinel: ObservableObject {
             sourceTitle: sourceTitle,
             sourceURL: sourceURL,
             copiedText: copiedText,
-            promptCtx: promptCtx,
+            promptCtx: state.promptContext ?? promptCtx,
             state: state
         )
     }

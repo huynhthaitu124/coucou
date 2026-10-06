@@ -48,6 +48,15 @@ enum TypeSafeJevEngine {
                 stateDict["window_title"] = title
                 if let u = url { stateDict["url"] = u }
                 stateDict["clipboard_text"] = snippet
+            case .composite(let wApp, let wTitle, let wUrl, let cApp, let cTitle, let cUrl, let snippet, let rel):
+                stateDict["active_app"] = wApp
+                stateDict["window_title"] = wTitle
+                if let u = wUrl { stateDict["url"] = u }
+                stateDict["clipboard_app"] = cApp
+                stateDict["clipboard_title"] = cTitle
+                if let u = cUrl { stateDict["clipboard_url"] = u }
+                stateDict["clipboard_text"] = snippet
+                stateDict["context_relation"] = rel.rawValue
             }
         }
 

@@ -268,6 +268,12 @@ final class ClaudeService {
                 var clipText = "[Active Clipboard Context: \(parts.joined(separator: " | "))]\n"
                 clipText += "[Copied Content:\n\(snippet)\n--- End of Copied Content ---]"
                 userContent.append(["type": "text", "text": clipText])
+            case .composite(let wApp, let wTitle, let wUrl, let cApp, let cTitle, let cUrl, let snippet, let rel):
+                var compText = "[Jev Context Fusion: \(rel.displayName)]\n"
+                compText += "- Active Window: \(wApp) — \"\(wTitle)\"\(wUrl.map { " (\($0))" } ?? "")\n"
+                compText += "- Clipboard Reference: [\(cApp)\(cTitle.isEmpty ? "" : " - \"\(cTitle)\"")\(cUrl.map { " (\($0))" } ?? "")]\n"
+                compText += "[Copied Content:\n\(snippet)\n--- End of Copied Content ---]"
+                userContent.append(["type": "text", "text": compText])
             }
         }
         userContent.append(["type": "text", "text": query])
@@ -429,6 +435,12 @@ final class ClaudeService {
                 if !sourceTitle.isEmpty && sourceTitle != sourceApp { parts.append("Window: \"\(sourceTitle)\"") }
                 if let u = sourceURL, !u.isEmpty { parts.append("URL: \(u)") }
                 contextPrefix = "[Active Clipboard Context: \(parts.joined(separator: " | "))]\n[Copied Content:\n\(snippet)\n--- End of Copied Content ---]\n"
+            case .composite(let wApp, let wTitle, let wUrl, let cApp, let cTitle, let cUrl, let snippet, let rel):
+                var comp = "[Jev Context Fusion: \(rel.displayName)]\n"
+                comp += "- Active Window: \(wApp) — \"\(wTitle)\"\(wUrl.map { " (\($0))" } ?? "")\n"
+                comp += "- Clipboard Reference: [\(cApp)\(cTitle.isEmpty ? "" : " - \"\(cTitle)\"")\(cUrl.map { " (\($0))" } ?? "")]\n"
+                comp += "[Copied Content:\n\(snippet)\n--- End of Copied Content ---]\n"
+                contextPrefix = comp
             }
         }
         // 0. Create initial placeholder with Jev Fast-Path step in UI
@@ -837,6 +849,12 @@ final class ClaudeService {
             var text = "Source: \(sourceApp)\nWindow/Tab: \(sourceTitle)"
             if let url = sourceURL { text += "\nURL: \(url)" }
             text += "\nCopied Content:\n\(snippet)"
+            text += "\n\nRequest: \(query)"
+            userContent.append(["type": "text", "text": text])
+        case .composite(let wApp, let wTitle, let wUrl, let cApp, _, _, let snippet, _):
+            var text = "Active Window: \(wApp)\nWindow/Tab: \(wTitle)"
+            if let url = wUrl { text += "\nURL: \(url)" }
+            text += "\nClipboard Source: \(cApp)\nCopied Snippet:\n\(snippet)"
             text += "\n\nRequest: \(query)"
             userContent.append(["type": "text", "text": text])
         case nil:

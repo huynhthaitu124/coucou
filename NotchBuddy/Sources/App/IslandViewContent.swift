@@ -926,11 +926,11 @@ struct PromptView: View {
         #if !APPSTORE
         if case .file = state.promptContext {
             // Keep user-attached file
-        } else if case .clipboard = state.promptContext {
-            // Keep clipboard context
-        } else if let fresh = WindowContextCapture.captureActive(),
-                  state.dismissedContextKey != fresh.contextKey {
-            state.promptContext = fresh
+        } else {
+            if state.activeWindowContext == nil, let fresh = WindowContextCapture.captureActive(), state.dismissedContextKey != fresh.contextKey {
+                state.activeWindowContext = fresh
+            }
+            state.resolveContextWithJev(query: query)
         }
         #endif
         Task {
@@ -1712,6 +1712,7 @@ struct SearchingView: View {
         case .window(_, let title, _): return "Claude is reading \(title)…"
         case .file(let name, _): return "Claude is reading \(name)…"
         case .clipboard(let app, _, _, _): return "Claude is analyzing clipboard from \(app)…"
+        case .composite(let wApp, _, _, let cApp, _, _, _, _): return "Claude is analyzing \(wApp) and \(cApp)…"
         case nil: return "Claude is searching…"
         }
     }
@@ -3456,6 +3457,8 @@ struct ContextChip: View {
             return "doc.text"
         case .clipboard:
             return "doc.on.clipboard"
+        case .composite(_, _, let url, _, _, _, _, _):
+            return url != nil ? "globe.badge.chevron.backward" : "rectangle.on.rectangle"
         }
     }
 
@@ -3480,6 +3483,25 @@ struct ContextChip: View {
                 return "📋 \(app) · \(cleanPart)"
             }
             return "📋 \(app)"
+        case .composite(let wApp, let wTitle, let wUrl, let cApp, _, _, _, let rel):
+            let wLabel: String = {
+                if let wUrl = wUrl, let host = URL(string: wUrl)?.host { return host }
+                if !wTitle.isEmpty && wTitle != wApp {
+                    let parts = wTitle.components(separatedBy: " — ")
+                    return parts.count > 1 ? (parts.last?.trimmingCharacters(in: .whitespacesAndNewlines) ?? wTitle) : wTitle
+                }
+                return wApp
+            }()
+            switch rel {
+            case .webSelection:
+                return "🌐 \(wLabel) (📋 Trích đoạn)"
+            case .crossAppResearch:
+                return "🌐 \(wLabel) + 📋 \(cApp)"
+            case .webToEditor:
+                return "💻 \(wApp) + 🌐 \(cApp)"
+            default:
+                return "🔀 \(wApp) + 📋 \(cApp)"
+            }
         }
     }
 
