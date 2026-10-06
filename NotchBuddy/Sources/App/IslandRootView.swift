@@ -13,8 +13,88 @@ struct IslandRootView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             IslandContainer(state: state)
                 .frame(maxWidth: .infinity, alignment: .center)
+
         }
         .ignoresSafeArea()
+    }
+}
+
+// MARK: - Notch Live Activity View (Apple Dynamic Island style inside the Notch)
+
+struct NotchLiveActivityView: View {
+    let suggestion: ProactiveSuggestion
+    @ObservedObject var state: AppState
+    let islandW: CGFloat
+    let islandH: CGFloat
+
+    /// Calculate the hardware camera notch dangerous area (MacBook notch height)
+    private var safeAreaTop: CGFloat {
+        state.hasNotch ? max(state.notchHeight, 33) : max(state.notchHeight, 26)
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Push content completely down past the physical notch cutout
+            Spacer().frame(height: safeAreaTop)
+
+            HStack(spacing: 12) {
+                // Ultra-short title and punchy detail (no icon)
+                VStack(alignment: .leading, spacing: 1.5) {
+                    Text(suggestion.title)
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundColor(Color(hex: "#F9FAFB"))
+                        .lineLimit(1)
+                    if let detail = suggestion.detail, !detail.isEmpty {
+                        Text(detail)
+                            .font(.system(size: 9.5))
+                            .foregroundColor(Color(hex: "#9CA3AF"))
+                            .lineLimit(1)
+                    }
+                }
+
+                Spacer(minLength: 8)
+
+                // Action button ("Thực hiện")
+                Button {
+                    CoucouSentinel.shared.acceptSuggestion(suggestion, state: state)
+                } label: {
+                    Text("Thực hiện")
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .foregroundColor(Color(hex: "#0B0C0E"))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4.5)
+                        .background(
+                            LinearGradient(
+                                colors: [Color.white, Color(hex: "#E5E7EB")],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        )
+                        .clipShape(Capsule())
+                        .shadow(color: Color.black.opacity(0.25), radius: 2, y: 1)
+                }
+                .buttonStyle(.plain)
+                .onHover { hovering in
+                    NotificationCenter.default.post(name: .botSetTgEs, object: hovering ? CGFloat(1.18) : CGFloat(1.0))
+                }
+
+                // Dismiss button
+                Button {
+                    CoucouSentinel.shared.dismissSuggestion(state: state)
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundColor(Color(hex: "#9CA3AF"))
+                        .frame(width: 20, height: 20)
+                        .background(Color.white.opacity(0.12))
+                        .clipShape(Circle())
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 16)
+            .frame(height: 38)
+        }
+        .frame(width: islandW, height: islandH, alignment: .top)
     }
 }
 
@@ -33,9 +113,15 @@ struct IslandContainer: View {
     private let closeEase  = Animation.timingCurve(0.45, 0, 0.2, 1, duration: 0.34)
 
     private var chatPromptHeight: CGFloat {
-        let base: CGFloat = 240
-        let perMsg: CGFloat = 40
-        return min(300, base + CGFloat(state.chatHistory.count) * perMsg)
+        if state.isLargeExpanded {
+            let base: CGFloat = 400
+            let perMsg: CGFloat = 40
+            return min(520, base + CGFloat(state.chatHistory.count) * perMsg)
+        } else {
+            let base: CGFloat = 240
+            let perMsg: CGFloat = 40
+            return min(300, base + CGFloat(state.chatHistory.count) * perMsg)
+        }
     }
 
     /// Pixels the content must be pushed down to clear the concave ear transparent area.
@@ -67,7 +153,12 @@ struct IslandContainer: View {
                         .offset(x: (islandWidth - IslandConst.expandedWidth) / 2)
                         .clipShape(IslandShape(width: islandWidth, height: islandHeight,
                                               cornerRadius: cornerRadius, topRadius: islandTopRadius))
-                        .transition(.opacity)
+                        .transition(
+                            .asymmetric(
+                                insertion: .opacity.animation(.easeOut(duration: 0.22).delay(0.08)),
+                                removal: .opacity.animation(.easeIn(duration: 0.12))
+                            )
+                        )
                 } else if uploadActive {
                     ZStack(alignment: .topLeading) {
                         UploadCanvasView(state: state)
@@ -80,20 +171,39 @@ struct IslandContainer: View {
                             .frame(width: islandWidth, height: 34)
                             .offset(y: 8)
                     }
-                    .transition(.opacity)
+                    .transition(
+                        .asymmetric(
+                            insertion: .opacity.animation(.easeOut(duration: 0.22).delay(0.08)),
+                            removal: .opacity.animation(.easeIn(duration: 0.12))
+                        )
+                    )
                 } else {
                     IslandContentView(state: state)
                         .frame(width: islandWidth, height: islandHeight - earOffset)
                         .offset(y: earOffset)
                         .clipShape(IslandShape(width: islandWidth, height: islandHeight,
                                               cornerRadius: cornerRadius, topRadius: islandTopRadius))
-                        .transition(.opacity)
+                        .transition(
+                            .asymmetric(
+                                insertion: .opacity.animation(.easeOut(duration: 0.22).delay(0.08)),
+                                removal: .opacity.animation(.easeIn(duration: 0.12))
+                            )
+                        )
                 }
+            }
+
+            // Notch Live Activity: Rendered directly inside the notch body when active
+            if let suggestion = state.proactiveSuggestion, state.mode != .expanded {
+                NotchLiveActivityView(suggestion: suggestion, state: state, islandW: islandWidth, islandH: islandHeight)
+                    .clipShape(IslandShape(width: islandWidth, height: islandHeight,
+                                          cornerRadius: cornerRadius, topRadius: islandTopRadius))
+                    .transition(.opacity)
             }
 
             // Single BotPlacement — always alive in the view tree so spring animations
             // fire from the current position (e.g. choose at 60,101) when canvas deactivates.
-            // Hidden during upload canvas or greeting (both draw their own Mochi).
+            // Hidden during upload canvas, greeting, or session history list.
+            let hideBot = uploadActive || greetingActive || (state.mode == .expanded && state.view == .history)
             BotPlacement(state: state, islandW: islandWidth, islandH: islandHeight)
                 // Keep idle animations inside the resting strip. Expanded views
                 // retain the panel's full height for particles and hands.
@@ -101,33 +211,33 @@ struct IslandContainer: View {
                     Rectangle().frame(width: islandWidth,
                                       height: state.mode == .expanded ? 320 : islandHeight)
                 }
-                .opacity(uploadActive || greetingActive ? 0 : 1)
-                .animation(.easeInOut(duration: 0.25), value: uploadActive || greetingActive)
+                .opacity(hideBot ? 0 : 1)
+                .animation(.easeInOut(duration: 0.25), value: hideBot)
 
             CountdownBar(state: state, islandW: islandWidth)
 
-            Group {
-                if state.mode == .compact {
-                    CompactMiniGrid(state: state)
-                        .scaleEffect(IslandRestingLayout(width: islandWidth, height: islandHeight).miniGridScale)
-                        .position(x: islandWidth - 40, y: islandHeight / 2)
-                        .transition(.opacity)
-                }
-            }
-            .animation(.easeInOut(duration: 0.25), value: state.mode == .compact)
+            // Compact mini grid for other tasks hidden per user preference for chat-only Coucou
         }
         .frame(width: islandWidth, height: islandHeight, alignment: .topLeading)
+        .clipShape(IslandShape(width: islandWidth, height: islandHeight,
+                               cornerRadius: cornerRadius, topRadius: islandTopRadius))
         .onChange(of: state.mode) { oldMode, newMode in
             let shrinking = modeOrder(newMode) < modeOrder(oldMode)
             let anim = shrinking ? closeEase : openSpring
             let (w, h) = islandSize(mode: newMode, view: state.view,
                                     progress: state.uploadProgress,
+                                    hasProactiveSuggestion: state.proactiveSuggestion != nil,
+                                    isLarge: state.isLargeExpanded,
                                     nw: state.notchWidth, nh: state.notchHeight)
             let cr  = newMode == .expanded ? IslandConst.expandedCorner : IslandConst.roundedCorner
             let tr: CGFloat = 0
             withAnimation(anim) {
                 islandWidth      = w
-                islandHeight     = (newMode == .expanded && state.view == .prompt) ? chatPromptHeight : h
+                if newMode == .expanded {
+                    islandHeight = (state.view == .prompt) ? chatPromptHeight : (state.view == .history ? (state.isLargeExpanded ? 480 : 280) : h)
+                } else {
+                    islandHeight = h
+                }
                 cornerRadius     = cr
                 islandTopRadius  = tr
             }
@@ -141,27 +251,62 @@ struct IslandContainer: View {
             }
             let (w, h) = islandSize(mode: .expanded, view: newView,
                                     progress: state.uploadProgress,
+                                    hasProactiveSuggestion: state.proactiveSuggestion != nil,
+                                    isLarge: state.isLargeExpanded,
                                     nw: state.notchWidth, nh: state.notchHeight)
             withAnimation(openSpring) {
                 islandWidth  = w
-                islandHeight = newView == .prompt ? chatPromptHeight : h
+                islandHeight = newView == .prompt ? chatPromptHeight : (newView == .history ? (state.isLargeExpanded ? 480 : 280) : h)
             }
         }
         .onChange(of: state.chatHistory.count) { _, _ in
             guard state.mode == .expanded, state.view == .prompt else { return }
             withAnimation(openSpring) { islandHeight = chatPromptHeight }
         }
+        .onChange(of: state.isLargeExpanded) { _, isLarge in
+            guard state.mode == .expanded else { return }
+            let (w, h) = islandSize(mode: .expanded, view: state.view,
+                                    progress: state.uploadProgress,
+                                    hasProactiveSuggestion: state.proactiveSuggestion != nil,
+                                    isLarge: isLarge,
+                                    nw: state.notchWidth, nh: state.notchHeight)
+            withAnimation(.spring(response: 0.42, dampingFraction: 0.78)) {
+                islandWidth  = w
+                if state.view == .prompt {
+                    islandHeight = chatPromptHeight
+                } else if state.view == .history {
+                    islandHeight = isLarge ? 480 : 280
+                } else {
+                    islandHeight = h
+                }
+            }
+        }
         .onAppear {
             let (w, h) = islandSize(mode: state.mode, view: state.view,
                                     progress: state.uploadProgress,
+                                    hasProactiveSuggestion: state.proactiveSuggestion != nil,
+                                    isLarge: state.isLargeExpanded,
                                     nw: state.notchWidth, nh: state.notchHeight)
             islandWidth      = w
-            islandHeight     = state.view == .prompt ? chatPromptHeight : h
+            if state.mode == .expanded {
+                islandHeight = state.view == .prompt ? chatPromptHeight : (state.view == .history ? (state.isLargeExpanded ? 480 : 280) : h)
+            } else {
+                islandHeight = h
+            }
             cornerRadius     = state.mode == .expanded ? IslandConst.expandedCorner : IslandConst.roundedCorner
             islandTopRadius  = 0
         }
-        .onReceive(NotificationCenter.default.publisher(for: .botGreet)) { _ in
-            greetNotif.toggle()
+        .onChange(of: state.proactiveSuggestion) { _, newSug in
+            guard state.mode != .expanded else { return }
+            let (w, h) = islandSize(mode: state.mode, view: state.view,
+                                    progress: state.uploadProgress,
+                                    hasProactiveSuggestion: newSug != nil,
+                                    nw: state.notchWidth, nh: state.notchHeight)
+            withAnimation(.spring(response: 0.42, dampingFraction: 0.74)) {
+                islandWidth = w
+                islandHeight = h
+                cornerRadius = newSug != nil ? 18 : IslandConst.roundedCorner
+            }
         }
     }
 
@@ -351,10 +496,19 @@ func botPosition(mode: IslandMode, view: IslandView, islandW: CGFloat, islandH: 
     case .hidden:
         return hasNotch ? (46, 16, 6, 0)
             : (islandW / 2, resting.botCenterY, resting.botDiameter, 1)
-    case .compact: return (40, resting.botCenterY, resting.botDiameter, 1)
+    case .compact:
+        let isExtended = islandH > 50
+        let botY = isExtended ? 16 : resting.botCenterY
+        return (40, botY, resting.botDiameter, 1)
     case .expanded:
+        if view == .history {
+            return (0, 0, 0, 0)
+        }
         let layout = IslandConst.viewLayouts[view]!
         let diameter = layout.botDiameter
+        if diameter == 0 {
+            return (0, 0, 0, 0)
+        }
         // Uploading: Mochi dot rides the leading edge of the progress fill.
         // Bar in island coords: left=36, width=526. cx = 36 + progress*526 (dot center at fill right edge).
         // cy comes from ViewLayout.botY (bar center in island coords).
@@ -437,7 +591,7 @@ struct IslandContentView: View {
                     // Views that fill available height instead of the fixed 98pt content frame:
                     // chat (prompt) is always flexible; mail is flexible only when active so
                     // it doesn't push the ZStack taller when inactive.
-                    let isTall = v == .prompt || (v == .mail && active)
+                    let isTall = v == .prompt || v == .history || (v == .mail && active)
                     let anim: Animation = active
                         ? .spring(response: 0.4, dampingFraction: 0.8).delay(0.16)
                         : .easeIn(duration: 0.16)
@@ -467,34 +621,120 @@ struct IslandHeader: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            // Left: tab capsules
-            HStack(spacing: 5) {
-                TabButton(icon: "house.fill", view: .overview, state: state)
-                TabButton(icon: "bubble.left.fill", view: .prompt, state: state, preAction: {
-                    #if !APPSTORE
-                    if state.promptContext == nil {
-                        state.promptContext = WindowContextCapture.captureActive(from: state.lastExternalApp)
+            // Left: Chat title & new chat button
+            HStack(spacing: 8) {
+                Button(action: {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                        state.view = .prompt
                     }
-                    #endif
-                })
-                TabButton(icon: "plus", view: .upload, state: state)
+                }) {
+                    HStack(spacing: 5) {
+                        Image(systemName: "bubble.left.fill")
+                            .font(.system(size: 11))
+                        Text("Chat")
+                            .font(.system(size: 12, weight: .semibold))
+                    }
+                    .foregroundColor(state.view == .prompt ? Color(hex: "#F5F6F8") : Color(hex: "#8E939C"))
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 4)
+                    .background(state.view == .prompt ? Color(hex: "#1D1F23") : Color.clear)
+                    .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+
+                if !state.chatHistory.isEmpty {
+                    Button(action: {
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                            state.archiveCurrentSession()
+                            state.chatHistory.removeAll()
+                            state.currentSessionId = nil
+                            state.promptContext = nil
+                            state.dismissedContextKey = nil
+                            ClaudeService.shared.clearConversation()
+                        }
+                    }) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "square.and.pencil")
+                                .font(.system(size: 11))
+                            Text("New")
+                                .font(.system(size: 11))
+                        }
+                        .foregroundColor(Color(hex: "#8E939C"))
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(Color.white.opacity(0.06))
+                        .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Start new conversation")
+                }
+
+                // Session History Tab Button
+                Button(action: {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                        state.view = (state.view == .history) ? .prompt : .history
+                    }
+                }) {
+                    HStack(spacing: 4) {
+                        Image(systemName: state.view == .history ? "clock.arrow.circlepath" : "clock")
+                            .font(.system(size: 11))
+                        Text("History")
+                            .font(.system(size: 11))
+                        if !state.sessions.isEmpty {
+                            Text("\(state.sessions.count)")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundColor(state.view == .history ? Color(hex: "#F5F6F8") : Color(hex: "#A78BFA"))
+                                .padding(.horizontal, 4.5)
+                                .padding(.vertical, 1)
+                                .background(state.view == .history ? Color.white.opacity(0.2) : Color(hex: "#A78BFA").opacity(0.18))
+                                .clipShape(Capsule())
+                        }
+                    }
+                    .foregroundColor(state.view == .history ? Color(hex: "#F5F6F8") : Color(hex: "#8E939C"))
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(state.view == .history ? Color(hex: "#1D1F23") : Color.white.opacity(0.06))
+                    .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .help("Lịch sử phiên chat")
             }
             .padding(.leading, 14)
 
             Spacer()
 
-            // Right: action icons
-            HStack(spacing: 14) {
+            // Right: action icons (Expand toggle + Settings toggle + Sound toggle)
+            HStack(spacing: 13) {
+                // Expand / Restore button
+                Button(action: {
+                    withAnimation(.spring(response: 0.42, dampingFraction: 0.78)) {
+                        state.isLargeExpanded.toggle()
+                    }
+                    NotificationCenter.default.post(name: .botSquash, object: nil)
+                    NotificationCenter.default.post(name: .triggerEmote, object: state.isLargeExpanded ? BotEmote.proud : BotEmote.happy)
+                    if state.isLargeExpanded {
+                        NotificationCenter.default.post(name: .botParticle, object: Particle.ParticleType.star)
+                    }
+                }) {
+                    Image(systemName: state.isLargeExpanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(state.isLargeExpanded ? Color(hex: "#A78BFA") : Color(hex: "#8E939C"))
+                }
+                .buttonStyle(.plain)
+                .help(state.isLargeExpanded ? "Thu nhỏ lại kích thước chuẩn" : "Mở rộng khung Coucou")
+
                 Button(action: {
                     withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                        state.view = .settings
+                        state.view = (state.view == .settings) ? .prompt : .settings
                     }
+                    NotificationCenter.default.post(name: .triggerEmote, object: BotEmote.wink)
                 }) {
                     Image(systemName: state.view == .settings ? "gearshape.fill" : "gearshape")
                         .font(.system(size: 14))
                         .foregroundColor(state.view == .settings ? Color(hex: "#F5F6F8") : Color(hex: "#8E939C"))
                 }
                 .buttonStyle(.plain)
+                .help("Cài đặt")
 
                 Button(action: { state.soundEnabled.toggle() }) {
                     Image(systemName: state.soundEnabled ? "speaker.wave.2" : "speaker.slash")
@@ -502,6 +742,7 @@ struct IslandHeader: View {
                         .foregroundColor(Color(hex: "#8E939C"))
                 }
                 .buttonStyle(.plain)
+                .help(state.soundEnabled ? "Tắt âm thanh" : "Bật âm thanh")
             }
             .padding(.trailing, 16)
         }

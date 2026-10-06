@@ -24,6 +24,7 @@ struct IslandViewContent: View {
         case .result:    ResultView(state: state)
         case .note:      NoteView(state: state)
         case .settings:  SettingsIslandView(state: state)
+        case .history:   SessionHistoryView(state: state)
         case .greeting:  EmptyView()  // GreetingCanvasView overlaid in IslandRootView
         }
     }
@@ -757,10 +758,6 @@ struct PromptView: View {
             CardBackground(wash: .indigo)
 
             VStack(alignment: .leading, spacing: 6) {
-                if let ctx = state.promptContext {
-                    ContextChip(context: ctx).padding(.top, 4)
-                }
-
                 if !state.chatHistory.isEmpty {
                     ScrollViewReader { proxy in
                         ScrollView(.vertical, showsIndicators: false) {
@@ -768,7 +765,7 @@ struct PromptView: View {
                                 ForEach(state.chatHistory) { msg in
                                     ChatBubble(message: msg).id(msg.id)
                                 }
-                                if state.stateOverride != nil {
+                                if state.stateOverride != nil && (state.chatHistory.last?.content.isEmpty ?? true) && (state.chatHistory.last?.steps.isEmpty ?? true) {
                                     HStack { TypingDotsView(); Spacer(minLength: 32) }
                                         .id("typing")
                                 }
@@ -778,6 +775,21 @@ struct PromptView: View {
                         .onChange(of: state.chatHistory.count) { _, _ in
                             if let last = state.chatHistory.last {
                                 withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
+                            }
+                        }
+                        .onChange(of: state.chatHistory.last?.content) { _, _ in
+                            if let last = state.chatHistory.last {
+                                proxy.scrollTo(last.id, anchor: .bottom)
+                            }
+                        }
+                        .onChange(of: state.chatHistory.last?.thinking) { _, _ in
+                            if let last = state.chatHistory.last {
+                                proxy.scrollTo(last.id, anchor: .bottom)
+                            }
+                        }
+                        .onChange(of: state.chatHistory.last?.steps) { _, _ in
+                            if let last = state.chatHistory.last {
+                                proxy.scrollTo(last.id, anchor: .bottom)
                             }
                         }
                         .onChange(of: state.stateOverride) { _, v in
@@ -794,28 +806,68 @@ struct PromptView: View {
                     Spacer()
                 }
 
-                HStack(spacing: 0) {
+                if let suggestion = state.proactiveSuggestion {
+                    ProactiveSuggestionInlineCard(suggestion: suggestion, state: state)
+                        .transition(.asymmetric(
+                            insertion: .move(edge: .bottom).combined(with: .opacity),
+                            removal: .opacity
+                        ))
+                }
+
+                HStack(alignment: .center, spacing: 6) {
+                    if let ctx = state.promptContext {
+                        ContextChip(context: ctx) {
+                            withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+                                state.dismissedContextKey = ctx.contextKey
+                                state.promptContext = nil
+                            }
+                        }
+                        .transition(.opacity.combined(with: .scale(scale: 0.95)))
+                    }
+
                     Spacer()
+
+                    HStack(spacing: 4.5) {
+                        Circle()
+                            .fill(Color(hex: "#10B981"))
+                            .frame(width: 4.5, height: 4.5)
+                        Text("Sentinel 24/7")
+                            .font(.system(size: 9.5, weight: .medium))
+                            .foregroundColor(Color(hex: "#A1A1AA"))
+                    }
+                    .padding(.horizontal, 6.5)
+                    .padding(.vertical, 3.5)
+                    .background(Color.white.opacity(0.04))
+                    .clipShape(RoundedRectangle(cornerRadius: 5))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 5)
+                            .stroke(Color.white.opacity(0.07), lineWidth: 0.8)
+                    )
+
                     Button {
                         withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
                             showModelPicker.toggle()
                         }
                     } label: {
-                        HStack(spacing: 5) {
+                        HStack(spacing: 4.5) {
                             Circle()
                                 .fill(Color(hex: state.chatProvider.accentHex))
-                                .frame(width: 6, height: 6)
+                                .frame(width: 4.5, height: 4.5)
                             Text(state.activeChatModel)
-                                .font(.system(size: 10.5, weight: .medium))
-                                .foregroundColor(Color(hex: "#7B8089"))
+                                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                                .foregroundColor(Color(hex: "#D4D4D8"))
                             Image(systemName: "chevron.up.chevron.down")
-                                .font(.system(size: 8))
-                                .foregroundColor(Color(hex: "#5C6370"))
+                                .font(.system(size: 7.5))
+                                .foregroundColor(Color(hex: "#71717A"))
                         }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(Color.white.opacity(0.06))
-                        .clipShape(Capsule())
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3.5)
+                        .background(Color.white.opacity(0.04))
+                        .clipShape(RoundedRectangle(cornerRadius: 5))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 5)
+                                .stroke(Color.white.opacity(0.07), lineWidth: 0.8)
+                        )
                     }
                     .buttonStyle(.plain)
                     .popover(isPresented: $showModelPicker, arrowEdge: .bottom) {
@@ -823,7 +875,7 @@ struct PromptView: View {
                             .frame(width: 300)
                     }
                 }
-                .padding(.horizontal, 10)
+                .padding(.horizontal, 4)
 
                 HStack(spacing: 8) {
                     TextField(state.chatHistory.isEmpty ? "Ask me anything…" : "Continue…", text: $text)
@@ -871,6 +923,16 @@ struct PromptView: View {
         focused = false
         state.chatHistory.append(ChatMessage(role: .user, content: query))
         state.stateOverride = .thinking
+        #if !APPSTORE
+        if case .file = state.promptContext {
+            // Keep user-attached file
+        } else if case .clipboard = state.promptContext {
+            // Keep clipboard context
+        } else if let fresh = WindowContextCapture.captureActive(),
+                  state.dismissedContextKey != fresh.contextKey {
+            state.promptContext = fresh
+        }
+        #endif
         Task {
             await ClaudeService.shared.chat(query: query, context: state.promptContext, state: state)
             await MainActor.run { focused = true }
@@ -992,6 +1054,580 @@ struct ModelPickerView: View {
     }
 }
 
+// MARK: - OpenAI-style Shimmer & Processing Components
+
+struct ShimmerSweepModifier: ViewModifier {
+    @State private var phase: CGFloat = -1.2
+
+    func body(content: Content) -> some View {
+        content
+            .overlay(
+                GeometryReader { geo in
+                    let width = geo.size.width
+                    LinearGradient(
+                        colors: [
+                            Color.clear,
+                            Color.white.opacity(0.12),
+                            Color.white.opacity(0.70),
+                            Color.white.opacity(0.12),
+                            Color.clear
+                        ],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                    .frame(width: max(width * 0.45, 60))
+                    .offset(x: phase * (width + 80))
+                    .blendMode(.plusLighter)
+                }
+                .mask(content)
+            )
+            .onAppear {
+                withAnimation(
+                    .linear(duration: 1.5)
+                    .repeatForever(autoreverses: false)
+                ) {
+                    phase = 1.35
+                }
+            }
+    }
+}
+
+extension View {
+    func shimmerSweep() -> some View {
+        modifier(ShimmerSweepModifier())
+    }
+}
+
+struct OpenAISparkleView: View {
+    @State private var rotation: Double = 0
+    @State private var pulse: CGFloat = 0.9
+
+    var body: some View {
+        Image(systemName: "sparkle")
+            .font(.system(size: 11, weight: .bold))
+            .foregroundStyle(
+                LinearGradient(
+                    colors: [Color(hex: "#C084FC"), Color(hex: "#818CF8"), Color(hex: "#38BDF8")],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            )
+            .rotationEffect(.degrees(rotation))
+            .scaleEffect(pulse)
+            .onAppear {
+                withAnimation(.linear(duration: 4.0).repeatForever(autoreverses: false)) {
+                    rotation = 360
+                }
+                withAnimation(.easeInOut(duration: 0.85).repeatForever(autoreverses: true)) {
+                    pulse = 1.18
+                }
+            }
+    }
+}
+
+struct StepDotRunningView: View {
+    @State private var pulse: CGFloat = 0.8
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(Color.white.opacity(0.18))
+                .frame(width: 8, height: 8)
+                .scaleEffect(pulse)
+            Circle()
+                .fill(Color(hex: "#F4F4F5"))
+                .frame(width: 4, height: 4)
+        }
+        .frame(width: 14, height: 14)
+        .onAppear {
+            withAnimation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true)) {
+                pulse = 1.35
+            }
+        }
+    }
+}
+
+struct StepDotDoneView: View {
+    var body: some View {
+        Circle()
+            .fill(Color(hex: "#52525B"))
+            .frame(width: 4, height: 4)
+            .frame(width: 14, height: 14)
+    }
+}
+
+struct AssistantWorkTrailView: View {
+    let steps: [AssistantWorkStep]
+    let isRunning: Bool
+    var durationSeconds: Int? = nil
+    let rawThinking: String?
+    @State private var isExpanded: Bool = false
+
+    var body: some View {
+        if steps.isEmpty && (rawThinking == nil || rawThinking?.isEmpty == true) {
+            EmptyView()
+        } else if isRunning {
+            // Live running state — WarpBot style
+            VStack(alignment: .leading, spacing: 4.5) {
+                // Completed previous steps: static dot + muted text, identical footprint
+                let completedSteps = steps.filter { $0.isDone }
+                ForEach(completedSteps) { step in
+                    HStack(alignment: .center, spacing: 6) {
+                        StepDotDoneView()
+
+                        Text(step.title)
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(Color(hex: "#8E939C"))
+
+                        if let detail = step.detail, !detail.isEmpty {
+                            Text("· \(detail)")
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundColor(Color(hex: "#52525B"))
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                    }
+                }
+
+                // Currently active step: pulsing dot + shimmering text
+                let activeStep = steps.first(where: { !$0.isDone })
+                HStack(alignment: .center, spacing: 6) {
+                    StepDotRunningView()
+
+                    Text(activeStep?.title ?? "Đang xử lý")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(Color(hex: "#F4F4F5"))
+                        .shimmerSweep()
+
+                    if let detail = activeStep?.detail, !detail.isEmpty {
+                        Text("· \(detail)")
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundColor(Color(hex: "#71717A"))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                }
+
+                // Raw thinking preview if present
+                if let raw = rawThinking, !raw.isEmpty {
+                    Text(raw)
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundColor(Color(hex: "#71717A"))
+                        .lineLimit(2)
+                        .padding(.leading, 20)
+                }
+            }
+            .padding(.vertical, 2)
+        } else {
+            // Finished state: WarpBot folded summary button
+            VStack(alignment: .leading, spacing: 4) {
+                Button(action: {
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        isExpanded.toggle()
+                    }
+                }) {
+                    HStack(spacing: 4.5) {
+                        Text(summaryTitle)
+                            .font(.system(size: 10.5, weight: .medium))
+                            .foregroundColor(Color(hex: "#8E939C"))
+
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 7.5, weight: .semibold))
+                            .foregroundColor(Color(hex: "#71717A"))
+                            .rotationEffect(.degrees(isExpanded ? 180 : 0))
+                    }
+                    .padding(.horizontal, 6.5)
+                    .padding(.vertical, 3.5)
+                    .background(Color.white.opacity(0.04))
+                    .clipShape(RoundedRectangle(cornerRadius: 5))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 5)
+                            .stroke(Color.white.opacity(0.06), lineWidth: 0.8)
+                    )
+                }
+                .buttonStyle(.plain)
+
+                if isExpanded {
+                    VStack(alignment: .leading, spacing: 5) {
+                        if !steps.isEmpty {
+                            ForEach(steps) { step in
+                                HStack(alignment: .top, spacing: 6) {
+                                    StepDotDoneView()
+                                        .padding(.top, 1)
+
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(step.title)
+                                            .font(.system(size: 10.5, weight: .medium))
+                                            .foregroundColor(Color(hex: "#D4D4D8"))
+
+                                        if let detail = step.detail, !detail.isEmpty {
+                                            Text(detail)
+                                                .font(.system(size: 9.5, design: .monospaced))
+                                                .foregroundColor(Color(hex: "#A1A1AA"))
+                                                .padding(.horizontal, 5)
+                                                .padding(.vertical, 2.5)
+                                                .background(Color.black.opacity(0.3))
+                                                .clipShape(RoundedRectangle(cornerRadius: 4))
+                                                .overlay(
+                                                    RoundedRectangle(cornerRadius: 4)
+                                                        .stroke(Color.white.opacity(0.06), lineWidth: 0.6)
+                                                )
+                                                .textSelection(.enabled)
+                                        }
+                                    }
+                                }
+                            }
+                        } else if let raw = rawThinking, !raw.isEmpty {
+                            HStack(alignment: .top, spacing: 6) {
+                                RoundedRectangle(cornerRadius: 1)
+                                    .fill(Color(hex: "#52525B"))
+                                    .frame(width: 2)
+                                Text(raw)
+                                    .font(.system(size: 10, design: .monospaced))
+                                    .foregroundColor(Color(hex: "#71717A"))
+                                    .textSelection(.enabled)
+                            }
+                            .padding(.leading, 6)
+                        }
+                    }
+                    .padding(.top, 3)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+                }
+            }
+        }
+    }
+
+    private var summaryTitle: String {
+        let durationStr = durationSeconds != nil ? "\(durationSeconds!)s" : "1s"
+        let toolSteps = steps.filter { $0.tool != "thinking" && $0.tool != "writing" }
+        if toolSteps.isEmpty {
+            return "Đã suy nghĩ · \(durationStr)"
+        }
+        if toolSteps.count == 1, let first = toolSteps.first {
+            if first.tool == "jev" {
+                return "Jev Fast-Path · \(durationStr)"
+            }
+            return "\(first.title) · \(durationStr)"
+        }
+        return "Đã thực hiện \(toolSteps.count) bước · \(durationStr)"
+    }
+}
+
+// MARK: - Markdown Rendering Components
+
+enum MarkdownBlock {
+    case heading(level: Int, text: String)
+    case codeBlock(language: String, code: String)
+    case blockquote(text: String)
+    case list(items: [(prefix: String, text: String)])
+    case divider
+    case paragraph(text: String)
+}
+
+struct InlineMarkdownText: View {
+    let text: String
+
+    var body: some View {
+        if let attr = try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)) {
+            Text(attr)
+                .font(.system(size: 12.5))
+                .foregroundColor(Color(hex: "#B5BAC4"))
+                .lineSpacing(2)
+                .fixedSize(horizontal: false, vertical: true)
+        } else {
+            Text(text)
+                .font(.system(size: 12.5))
+                .foregroundColor(Color(hex: "#B5BAC4"))
+                .lineSpacing(2)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
+struct RichCodeBlockView: View {
+    let language: String
+    let code: String
+    @State private var copied: Bool = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text(language.isEmpty ? "code" : language.lowercased())
+                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    .foregroundColor(Color(hex: "#8E939C"))
+
+                Spacer()
+
+                Button(action: copyToClipboard) {
+                    HStack(spacing: 3.5) {
+                        Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                            .font(.system(size: 9))
+                        Text(copied ? "Copied" : "Copy")
+                            .font(.system(size: 10, weight: .medium))
+                    }
+                    .foregroundColor(copied ? Color(hex: "#4EAA7A") : Color(hex: "#A0A5AE"))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2.5)
+                    .background(Color.white.opacity(0.06))
+                    .clipShape(RoundedRectangle(cornerRadius: 4))
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 9)
+            .padding(.vertical, 5)
+            .background(Color.white.opacity(0.04))
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                Text(code)
+                    .font(.system(size: 11.5, design: .monospaced))
+                    .foregroundColor(Color(hex: "#ECEEF2"))
+                    .lineSpacing(2)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 7)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .background(Color.black.opacity(0.42))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color.white.opacity(0.08), lineWidth: 0.8)
+        )
+    }
+
+    private func copyToClipboard() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(code, forType: .string)
+        withAnimation(.easeInOut(duration: 0.15)) {
+            copied = true
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) {
+            withAnimation {
+                copied = false
+            }
+        }
+    }
+}
+
+struct HeadingBlockView: View {
+    let level: Int
+    let text: String
+
+    var body: some View {
+        InlineMarkdownText(text: text)
+            .font(headingFont)
+            .foregroundColor(headingColor)
+            .padding(.top, level <= 2 ? 4 : 2)
+            .padding(.bottom, 1)
+    }
+
+    private var headingFont: Font {
+        switch level {
+        case 1: return .system(size: 14.5, weight: .bold)
+        case 2: return .system(size: 13.5, weight: .semibold)
+        case 3: return .system(size: 12.5, weight: .semibold)
+        default: return .system(size: 12, weight: .medium)
+        }
+    }
+
+    private var headingColor: Color {
+        switch level {
+        case 1: return Color(hex: "#FFFFFF")
+        case 2: return Color(hex: "#F1F2F4")
+        default: return Color(hex: "#E1E4EA")
+        }
+    }
+}
+
+struct BlockquoteBlockView: View {
+    let text: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            RoundedRectangle(cornerRadius: 1)
+                .fill(Color(hex: "#8B5CF6"))
+                .frame(width: 2.5)
+
+            InlineMarkdownText(text: text)
+                .foregroundColor(Color(hex: "#9CA3AF"))
+                .italic()
+        }
+        .padding(.vertical, 2)
+    }
+}
+
+struct ListBlockView: View {
+    let items: [(prefix: String, text: String)]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3.5) {
+            ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+                HStack(alignment: .top, spacing: 6) {
+                    Text(item.prefix)
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundColor(Color(hex: "#A28CEE"))
+                        .frame(minWidth: item.prefix == "•" ? 10 : 16, alignment: .trailing)
+
+                    InlineMarkdownText(text: item.text)
+                }
+            }
+        }
+    }
+}
+
+struct MarkdownContentView: View {
+    let markdown: String
+
+    var body: some View {
+        let blocks = parseMarkdownBlocks(markdown)
+        VStack(alignment: .leading, spacing: 7) {
+            ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
+                switch block {
+                case .heading(let level, let text):
+                    HeadingBlockView(level: level, text: text)
+                case .codeBlock(let language, let code):
+                    RichCodeBlockView(language: language, code: code)
+                case .blockquote(let text):
+                    BlockquoteBlockView(text: text)
+                case .list(let items):
+                    ListBlockView(items: items)
+                case .divider:
+                    Divider()
+                        .background(Color.white.opacity(0.12))
+                        .padding(.vertical, 2)
+                case .paragraph(let text):
+                    InlineMarkdownText(text: text)
+                }
+            }
+        }
+        .textSelection(.enabled)
+    }
+
+    private func parseMarkdownBlocks(_ raw: String) -> [MarkdownBlock] {
+        var blocks: [MarkdownBlock] = []
+        let lines = raw.components(separatedBy: "\n")
+        var i = 0
+
+        while i < lines.count {
+            let line = lines[i]
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+
+            // 1. Code Block
+            if trimmed.hasPrefix("```") {
+                let lang = String(trimmed.dropFirst(3)).trimmingCharacters(in: .whitespaces)
+                var codeLines: [String] = []
+                i += 1
+                while i < lines.count {
+                    if lines[i].trimmingCharacters(in: .whitespaces).hasPrefix("```") {
+                        i += 1
+                        break
+                    }
+                    codeLines.append(lines[i])
+                    i += 1
+                }
+                blocks.append(.codeBlock(language: lang, code: codeLines.joined(separator: "\n")))
+                continue
+            }
+
+            // 2. Divider
+            if trimmed == "---" || trimmed == "***" || trimmed == "___" {
+                blocks.append(.divider)
+                i += 1
+                continue
+            }
+
+            // 3. Headings
+            if trimmed.hasPrefix("#") {
+                var level = 0
+                var text = trimmed
+                while text.hasPrefix("#") {
+                    level += 1
+                    text = String(text.dropFirst())
+                }
+                if text.hasPrefix(" ") {
+                    blocks.append(.heading(level: min(level, 4), text: text.trimmingCharacters(in: .whitespaces)))
+                    i += 1
+                    continue
+                }
+            }
+
+            // 4. Blockquote
+            if trimmed.hasPrefix(">") {
+                var quoteLines: [String] = []
+                while i < lines.count {
+                    let qLine = lines[i].trimmingCharacters(in: .whitespaces)
+                    if qLine.hasPrefix(">") {
+                        let content = qLine.hasPrefix("> ") ? String(qLine.dropFirst(2)) : String(qLine.dropFirst(1))
+                        quoteLines.append(content)
+                        i += 1
+                    } else if !qLine.isEmpty && !quoteLines.isEmpty {
+                        quoteLines.append(qLine)
+                        i += 1
+                    } else {
+                        break
+                    }
+                }
+                blocks.append(.blockquote(text: quoteLines.joined(separator: "\n")))
+                continue
+            }
+
+            // 5. Lists
+            let isBullet = trimmed.hasPrefix("- ") || trimmed.hasPrefix("* ")
+            let isNumbered = trimmed.range(of: #"^\d+\.\s"#, options: .regularExpression) != nil
+            if isBullet || isNumbered {
+                var listItems: [(prefix: String, text: String)] = []
+                while i < lines.count {
+                    let lTrim = lines[i].trimmingCharacters(in: .whitespaces)
+                    if lTrim.hasPrefix("- ") || lTrim.hasPrefix("* ") {
+                        listItems.append(("•", String(lTrim.dropFirst(2))))
+                        i += 1
+                    } else if let numRange = lTrim.range(of: #"^\d+\.\s"#, options: .regularExpression) {
+                        let prefix = String(lTrim[numRange]).trimmingCharacters(in: .whitespaces)
+                        let itemText = String(lTrim[numRange.upperBound...])
+                        listItems.append((prefix, itemText))
+                        i += 1
+                    } else if lTrim.isEmpty {
+                        i += 1
+                        break
+                    } else {
+                        break
+                    }
+                }
+                blocks.append(.list(items: listItems))
+                continue
+            }
+
+            // 6. Blank lines
+            if trimmed.isEmpty {
+                i += 1
+                continue
+            }
+
+            // 7. Paragraph
+            var pLines: [String] = [line]
+            i += 1
+            while i < lines.count {
+                let nextTrim = lines[i].trimmingCharacters(in: .whitespaces)
+                if nextTrim.isEmpty ||
+                   nextTrim.hasPrefix("```") ||
+                   nextTrim.hasPrefix("#") ||
+                   nextTrim.hasPrefix(">") ||
+                   nextTrim.hasPrefix("- ") ||
+                   nextTrim.hasPrefix("* ") ||
+                   nextTrim.range(of: #"^\d+\.\s"#, options: .regularExpression) != nil ||
+                   nextTrim == "---" {
+                    break
+                }
+                pLines.append(lines[i])
+                i += 1
+            }
+            blocks.append(.paragraph(text: pLines.joined(separator: "\n")))
+        }
+
+        return blocks
+    }
+}
+
 struct ChatBubble: View {
     let message: ChatMessage
 
@@ -1008,11 +1644,37 @@ struct ChatBubble: View {
                     .background(Color.white.opacity(0.13))
                     .clipShape(RoundedRectangle(cornerRadius: 12))
             } else {
-                Text(message.content)
-                    .font(.system(size: 12.5))
-                    .foregroundColor(Color(hex: "#B0B5BE"))
-                    .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
+                VStack(alignment: .leading, spacing: 6) {
+                    AssistantWorkTrailView(
+                        steps: message.steps,
+                        isRunning: message.isRunning,
+                        durationSeconds: message.durationSeconds,
+                        rawThinking: message.thinking
+                    )
+
+                    if !message.content.isEmpty {
+                        MarkdownContentView(markdown: message.content)
+                    }
+
+                    if !message.isRunning && (!message.content.isEmpty || !message.steps.isEmpty) {
+                        HStack(spacing: 5) {
+                            Text(message.creditString)
+                                .font(.system(size: 9.5, weight: .medium, design: .monospaced))
+                                .foregroundColor(Color(hex: "#71717A"))
+
+                            if let dur = message.durationSeconds {
+                                Text("·")
+                                    .font(.system(size: 9.5))
+                                    .foregroundColor(Color(hex: "#52525B"))
+                                Text("\(dur)s")
+                                    .font(.system(size: 9.5, design: .monospaced))
+                                    .foregroundColor(Color(hex: "#71717A"))
+                            }
+                        }
+                        .padding(.top, 1)
+                        .padding(.leading, 1)
+                    }
+                }
                 Spacer(minLength: 8)
             }
         }
@@ -1049,6 +1711,7 @@ struct SearchingView: View {
         switch state.promptContext {
         case .window(_, let title, _): return "Claude is reading \(title)…"
         case .file(let name, _): return "Claude is reading \(name)…"
+        case .clipboard(let app, _, _, _): return "Claude is analyzing clipboard from \(app)…"
         case nil: return "Claude is searching…"
         }
     }
@@ -2781,39 +3444,180 @@ struct CodeBlock: View {
 
 struct ContextChip: View {
     let context: PromptContext
-    @State private var glowing = false
+    var onRemove: (() -> Void)? = nil
+    @State private var isHoveringClose = false
+
+    var iconName: String {
+        switch context {
+        case .window(_, _, let url):
+            if url != nil { return "globe" }
+            return "macwindow"
+        case .file:
+            return "doc.text"
+        case .clipboard:
+            return "doc.on.clipboard"
+        }
+    }
 
     var label: String {
         switch context {
-        case .window(let app, _, let url):
+        case .window(let app, let title, let url):
             if let url = url, let host = URL(string: url)?.host { return "\(app) · \(host)" }
+            if !title.isEmpty && title != app {
+                let parts = title.components(separatedBy: " — ")
+                let cleanPart = parts.count > 1 ? (parts.last?.trimmingCharacters(in: .whitespacesAndNewlines) ?? title) : title
+                return "\(app) · \(cleanPart)"
+            }
             return app
         case .file(let name, _): return name
+        case .clipboard(let app, let title, let url, _):
+            if let url = url, let host = URL(string: url)?.host {
+                return "📋 \(app) · \(host)"
+            }
+            if !title.isEmpty && title != app {
+                let parts = title.components(separatedBy: " — ")
+                let cleanPart = parts.count > 1 ? (parts.last?.trimmingCharacters(in: .whitespacesAndNewlines) ?? title) : title
+                return "📋 \(app) · \(cleanPart)"
+            }
+            return "📋 \(app)"
         }
     }
 
     var body: some View {
-        HStack(spacing: 6) {
-            Circle()
-                .fill(LinearGradient(colors: [Color(hex: "#FF6B5B"), Color(hex: "#F7B32B"), Color(hex: "#2DD4A7"), Color(hex: "#38BDF8"), Color(hex: "#A78BFA")], startPoint: .topLeading, endPoint: .bottomTrailing))
-                .frame(width: 7, height: 7)
+        HStack(spacing: 5) {
+            Image(systemName: iconName)
+                .font(.system(size: 9.5, weight: .medium))
+                .foregroundColor(Color(hex: "#A1A1AA"))
+
             Text(label)
-                .font(.system(size: 11.5))
-                .foregroundColor(Color(hex: "#F1F2F4"))
-        }
-        .padding(.horizontal, 10).padding(.vertical, 4)
-        .background(Color.white.opacity(0.1))
-        .clipShape(Capsule())
-        .overlay(Capsule().stroke(Color.white.opacity(glowing ? 0.75 : 0), lineWidth: 1.5))
-        .scaleEffect(glowing ? 1.06 : 1.0)
-        .onAppear {
-            withAnimation(.spring(response: 0.25, dampingFraction: 0.55)) { glowing = true }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
-                withAnimation(.easeOut(duration: 0.3)) { glowing = false }
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(Color(hex: "#F4F4F5"))
+                .lineLimit(1)
+                .truncationMode(.middle)
+
+            if let onRemove = onRemove {
+                Button(action: onRemove) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 7.5, weight: .semibold))
+                        .foregroundColor(Color(hex: isHoveringClose ? "#EF4444" : "#71717A"))
+                        .padding(2)
+                        .background(Color.white.opacity(isHoveringClose ? 0.12 : 0))
+                        .clipShape(RoundedRectangle(cornerRadius: 3))
+                }
+                .buttonStyle(.plain)
+                .onHover { h in isHoveringClose = h }
+                .help("Xoá context")
             }
         }
+        .padding(.leading, 7)
+        .padding(.trailing, onRemove != nil ? 4 : 7)
+        .padding(.vertical, 3.5)
+        .background(Color.white.opacity(0.06))
+        .clipShape(RoundedRectangle(cornerRadius: 5.5))
+        .overlay(
+            RoundedRectangle(cornerRadius: 5.5)
+                .stroke(Color.white.opacity(0.08), lineWidth: 0.8)
+        )
     }
 }
+
+// MARK: - Proactive Suggestion Card (Warp-style inline card)
+
+struct ProactiveSuggestionInlineCard: View {
+    let suggestion: ProactiveSuggestion
+    @ObservedObject var state: AppState
+
+    var body: some View {
+        HStack(spacing: 10) {
+            ZStack {
+                Circle()
+                    .fill(LinearGradient(
+                        colors: [Color(hex: "#FF6B5B"), Color(hex: "#F7B32B"), Color(hex: "#38BDF8"), Color(hex: "#A78BFA")],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ))
+                    .frame(width: 26, height: 26)
+                Image(systemName: suggestion.icon)
+                    .font(.system(size: 11.5, weight: .bold))
+                    .foregroundColor(.white)
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 5) {
+                    Text("GỢI Ý TỪ SENTINEL AI 24/7")
+                        .font(.system(size: 8.5, weight: .bold))
+                        .foregroundColor(Color(hex: "#A78BFA"))
+                    Circle()
+                        .fill(Color(hex: "#10B981"))
+                        .frame(width: 4.5, height: 4.5)
+                }
+
+                Text(suggestion.title)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(Color(hex: "#F1F2F4"))
+                    .lineLimit(1)
+
+                if let detail = suggestion.detail {
+                    Text(detail)
+                        .font(.system(size: 10.5))
+                        .foregroundColor(Color(hex: "#9CA3AF"))
+                        .lineLimit(2)
+                }
+            }
+
+            Spacer(minLength: 8)
+
+            Button {
+                CoucouSentinel.shared.acceptSuggestion(suggestion, state: state)
+            } label: {
+                HStack(spacing: 4) {
+                    Text("Thực hiện")
+                        .font(.system(size: 11, weight: .semibold))
+                    Image(systemName: "arrow.right")
+                        .font(.system(size: 9.5, weight: .bold))
+                }
+                .foregroundColor(Color(hex: "#0B0C0E"))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(Color.white)
+                .clipShape(Capsule())
+            }
+            .buttonStyle(.plain)
+
+            Button {
+                CoucouSentinel.shared.dismissSuggestion(state: state)
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundColor(Color(hex: "#9CA3AF"))
+                    .padding(5)
+                    .background(Color.white.opacity(0.08))
+                    .clipShape(Circle())
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 14)
+                .fill(Color(hex: "#14161D").opacity(0.97))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14)
+                .stroke(
+                    LinearGradient(
+                        colors: [Color.white.opacity(0.24), Color(hex: "#A78BFA").opacity(0.35)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 1
+                )
+        )
+        .padding(.horizontal, 4)
+        .padding(.bottom, 2)
+    }
+}
+
 
 struct MailField: View {
     let label: String
@@ -3026,6 +3830,22 @@ struct SettingsIslandView: View {
                     }
                 }
 
+                // Hover to open chat row
+                HStack(spacing: 10) {
+                    Image(systemName: "cursorarrow.rays")
+                        .font(.system(size: 12))
+                        .foregroundColor(Color(hex: "#8E939C"))
+                        .frame(width: 16)
+                    Text("Hover to open chat")
+                        .font(.system(size: 12))
+                        .foregroundColor(Color(hex: "#C5C8CD"))
+                    Spacer()
+                    Toggle("", isOn: $state.expandOnHover)
+                        .toggleStyle(.switch)
+                        .labelsHidden()
+                        .scaleEffect(0.75)
+                }
+
                 // Connection status
                 HStack(spacing: 14) {
                     StatusBadge(label: "Claude Code", ok: claudeConnected)
@@ -3091,3 +3911,271 @@ extension Color {
         )
     }
 }
+
+// MARK: - Session History View
+
+struct SessionHistoryView: View {
+    @ObservedObject var state: AppState
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            // Header: Title and Actions
+            HStack(alignment: .center) {
+                HStack(spacing: 6) {
+                    Image(systemName: "clock.arrow.circlepath")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(Color(hex: "#A78BFA"))
+                    Text("Lịch sử phiên chat")
+                        .font(.system(size: 12.5, weight: .semibold))
+                        .foregroundColor(Color(hex: "#F5F6F8"))
+                    if !state.sessions.isEmpty {
+                        Text("\(state.sessions.count)")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundColor(Color(hex: "#A78BFA"))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 1.5)
+                            .background(Color(hex: "#A78BFA").opacity(0.15))
+                            .clipShape(Capsule())
+                    }
+                }
+
+                Spacer()
+
+                if !state.sessions.isEmpty {
+                    Button(action: {
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                            state.clearAllSessions()
+                        }
+                    }) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "trash")
+                                .font(.system(size: 9.5))
+                            Text("Xoá tất cả")
+                                .font(.system(size: 10.5))
+                        }
+                        .foregroundColor(Color(hex: "#EF4444").opacity(0.85))
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(Color(hex: "#EF4444").opacity(0.12))
+                        .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Xoá toàn bộ lịch sử phiên chat")
+                }
+
+                Button(action: {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                        state.view = .prompt
+                    }
+                }) {
+                    HStack(spacing: 3) {
+                        Image(systemName: "arrow.left")
+                            .font(.system(size: 9.5, weight: .semibold))
+                        Text("Quay lại")
+                            .font(.system(size: 10.5, weight: .medium))
+                    }
+                    .foregroundColor(Color(hex: "#8E939C"))
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(Color.white.opacity(0.06))
+                    .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 4)
+            .padding(.top, 2)
+
+            // Content: Empty or List of Sessions
+            if state.sessions.isEmpty {
+                VStack(spacing: 7) {
+                    Spacer()
+                    Image(systemName: "bubble.left.and.bubble.right")
+                        .font(.system(size: 26))
+                        .foregroundColor(Color(hex: "#6B7280"))
+                    Text("Chưa có phiên chat nào được lưu")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(Color(hex: "#9CA3AF"))
+                    Text("Mỗi khi bạn ấn 'New' hoặc hoàn thành trao đổi, phiên chat sẽ được lưu tại đây.")
+                        .font(.system(size: 10))
+                        .foregroundColor(Color(hex: "#6B7280"))
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 24)
+
+                    Button(action: {
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                            state.view = .prompt
+                        }
+                    }) {
+                        Text("Bắt đầu chat")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(Color.white)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 4.5)
+                            .background(Color(hex: "#6366F1"))
+                            .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.top, 4)
+                    Spacer()
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView(.vertical, showsIndicators: false) {
+                    VStack(spacing: 6) {
+                        ForEach(state.sessions) { session in
+                            SessionCardView(session: session, state: state)
+                        }
+                    }
+                    .padding(.horizontal, 2)
+                    .padding(.bottom, 6)
+                }
+                .frame(maxHeight: state.isLargeExpanded ? 410 : 210)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+struct HistoryTitleMarkdownText: View {
+    let text: String
+
+    var titleAttributedString: AttributedString {
+        if let attr = try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)) {
+            return attr
+        }
+        return AttributedString(text)
+    }
+
+    var body: some View {
+        Text(titleAttributedString)
+            .font(.system(size: 11.5, weight: .medium))
+            .foregroundColor(Color(hex: "#F3F4F6"))
+            .lineLimit(1)
+            .truncationMode(.tail)
+    }
+}
+
+struct HistoryPreviewMarkdownText: View {
+    let text: String
+
+    var previewAttributedString: AttributedString {
+        let lines = text.components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { line in
+                !line.isEmpty && !line.hasPrefix("```")
+            }
+
+        var cleanedSegments: [String] = []
+        for line in lines.prefix(3) {
+            var l = line
+            while l.hasPrefix("#") {
+                l.removeFirst()
+            }
+            l = l.trimmingCharacters(in: .whitespaces)
+            if l.hasPrefix("- ") || l.hasPrefix("* ") || l.hasPrefix("> ") || l.hasPrefix("+ ") {
+                l = String(l.dropFirst(2)).trimmingCharacters(in: .whitespaces)
+            }
+            if let match = l.range(of: #"^\d+\.\s+"#, options: .regularExpression) {
+                l.removeSubrange(match)
+                l = l.trimmingCharacters(in: .whitespaces)
+            }
+            if !l.isEmpty {
+                cleanedSegments.append(l)
+            }
+        }
+
+        let flattened = cleanedSegments.joined(separator: " ")
+        if let attr = try? AttributedString(markdown: flattened, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)) {
+            return attr
+        }
+        return AttributedString(flattened)
+    }
+
+    var body: some View {
+        Text(previewAttributedString)
+            .font(.system(size: 10))
+            .foregroundColor(Color(hex: "#9CA3AF"))
+            .lineLimit(1)
+            .truncationMode(.tail)
+    }
+}
+
+struct SessionCardView: View {
+    let session: ChatSession
+    @ObservedObject var state: AppState
+    @State private var isHovered = false
+
+    var isCurrent: Bool {
+        state.currentSessionId == session.id
+    }
+
+    var body: some View {
+        Button(action: {
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                state.loadSession(session)
+            }
+        }) {
+            HStack(alignment: .center, spacing: 9) {
+                // Leading indicator or icon
+                Circle()
+                    .fill(isCurrent ? Color(hex: "#10B981") : Color(hex: "#8B5CF6").opacity(0.7))
+                    .frame(width: 6, height: 6)
+
+                VStack(alignment: .leading, spacing: 2.5) {
+                    HStack(spacing: 6) {
+                        HistoryTitleMarkdownText(text: session.title)
+
+                        if isCurrent {
+                            Text("Đang mở")
+                                .font(.system(size: 8.5, weight: .semibold))
+                                .foregroundColor(Color(hex: "#10B981"))
+                                .padding(.horizontal, 4.5)
+                                .padding(.vertical, 1)
+                                .background(Color(hex: "#10B981").opacity(0.15))
+                                .clipShape(Capsule())
+                        }
+
+                        Spacer()
+
+                        Text(session.formattedDate)
+                            .font(.system(size: 9.5))
+                            .foregroundColor(Color(hex: "#6B7280"))
+                    }
+
+                    if let preview = session.previewText, !preview.isEmpty {
+                        HistoryPreviewMarkdownText(text: preview)
+                    }
+                }
+
+                // Delete button on hover
+                if isHovered {
+                    Button(action: {
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                            state.deleteSession(id: session.id)
+                        }
+                    }) {
+                        Image(systemName: "trash")
+                            .font(.system(size: 9.5))
+                            .foregroundColor(Color(hex: "#EF4444").opacity(0.85))
+                            .padding(4)
+                            .background(Color.white.opacity(0.06))
+                            .clipShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Xoá phiên này")
+                }
+            }
+            .padding(.horizontal, 9)
+            .padding(.vertical, 6)
+            .background(isHovered ? Color.white.opacity(0.07) : Color.white.opacity(0.035))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(isCurrent ? Color(hex: "#10B981").opacity(0.4) : (isHovered ? Color.white.opacity(0.12) : Color.white.opacity(0.05)), lineWidth: 0.8)
+            )
+        }
+        .buttonStyle(.plain)
+        .onHover { h in isHovered = h }
+    }
+}
+

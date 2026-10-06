@@ -445,6 +445,9 @@ struct SettingsView: View {
                 // MARK: Timings
                 GroupBox("Behavior") {
                     VStack(alignment: .leading, spacing: 10) {
+                        Toggle("Hover over Notch to open Chat (no click needed)", isOn: $state.expandOnHover)
+                            .font(.system(size: 13))
+
                         HStack(spacing: 8) {
                             Text("Close after")
                             TextField("60", value: $state.autoCloseInterval, format: .number)

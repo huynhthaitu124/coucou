@@ -43,6 +43,13 @@ final class IslandStateMachine {
 
     /// Mouse entered the island notch area
     func mouseEntered() {
+        if AppState.shared.expandOnHover {
+            if state != .home && state != .coucou {
+                cancelTimers()
+                transition(to: .home)
+                return
+            }
+        }
         switch state {
         case .hidden:
             if isHeldOpen?() == true {
@@ -160,12 +167,13 @@ final class IslandStateMachine {
 
     private func scheduleHomeCollapse() {
         homeCollapseWork?.cancel()
+        let delay: TimeInterval = AppState.shared.expandOnHover && AppState.shared.chatHistory.isEmpty ? 2.5 : homeToPetitDelay
         let item = DispatchWorkItem { [weak self] in
             guard let self, self.state == .home, !(self.isHeldOpen?() ?? false) else { return }
             self.transition(to: .petit)
         }
         homeCollapseWork = item
-        DispatchQueue.main.asyncAfter(deadline: .now() + homeToPetitDelay, execute: item)
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
     }
 
     func cancelTimers() {

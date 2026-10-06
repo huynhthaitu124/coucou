@@ -14,6 +14,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)
         setupMenuBarItem()
         setupIsland()
+        CoucouSentinel.shared.startMonitoring(state: AppState.shared)
     }
 
     // MARK: - Menu bar
@@ -39,7 +40,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Actions
 
     @objc private func openIsland() {
-        islandController?.expand(to: .overview)
+        islandController?.expand(to: .prompt)
     }
 
     private var settingsWindow: NSWindow?
@@ -88,14 +89,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         islandController = IslandWindowController()
         islandController?.showWindow(nil)
         islandController?.fsm.launch()
-        HookServer.shared.start()
-        N8nPoller.shared.start()
-        VercelPoller.shared.start()
-        ResendPoller.shared.start()
-        GithubPoller.shared.start()
-        StripePoller.shared.start()
-        CalcomPoller.shared.start()
-        NotionPoller.shared.start()
+        // Background pollers & HookServer disabled per user preference for chat-only Coucou
+        // HookServer.shared.start()
+        // N8nPoller.shared.start()
+        // VercelPoller.shared.start()
+        // ResendPoller.shared.start()
+        // GithubPoller.shared.start()
+        // StripePoller.shared.start()
+        // CalcomPoller.shared.start()
+        // NotionPoller.shared.start()
         NotificationCenter.default.addObserver(self, selector: #selector(openSettings),
                                                name: .openFullSettings, object: nil)
     }

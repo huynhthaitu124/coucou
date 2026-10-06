@@ -85,6 +85,17 @@ struct BotCanvasView: View {
         .onReceive(NotificationCenter.default.publisher(for: .botGreet)) { _ in
             engine.greet()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .botSquash)) { _ in
+            engine.squash()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .botRoll)) { _ in
+            engine.doRoll(duration: 450, turns: 1)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .botParticle)) { notif in
+            if let pType = notif.object as? Particle.ParticleType {
+                engine.emit(pType, count: 4)
+            }
+        }
         .onAppear {
             engine.setState(state.effectiveState, force: true)
         }

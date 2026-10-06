@@ -22,7 +22,8 @@ struct IslandScreenGeometry {
             } else {
                 width = Self.fallbackNotchWidth
             }
-            height = safeAreaTop
+            // MacBook hardware notch physically extends ~1pt (66px) below macOS menu bar safe area
+            height = max(safeAreaTop + 1, 33)
         } else {
             width = Self.noNotchWidth
             height = min(Self.noNotchHeight, menuBarHeight)

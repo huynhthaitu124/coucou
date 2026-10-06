@@ -14,6 +14,7 @@ final class IslandWindowController: NSWindowController {
     private var wasInIsland = false
     private var frameTimer: Timer?
     private var keyMonitor: Any?
+    private var mouseMonitor: Any?
     private var viewSubscription: AnyCancellable?
 
     // Confused recovery timer (set by handleDizzy)
@@ -21,6 +22,7 @@ final class IslandWindowController: NSWindowController {
 
     // Finished-pin timer
     private var finishedPinTimer: DispatchWorkItem?
+    private var contextSyncTimer: Timer?
 
     // Bot-head hover (love emote — mirrors prototype botHover())
     private var hoverTimer: DispatchWorkItem?
@@ -50,8 +52,8 @@ final class IslandWindowController: NSWindowController {
         let nW = geometry.width
         let nH = geometry.height
 
-        let panelW: CGFloat = 720
-        let panelH: CGFloat = 320
+        let panelW: CGFloat = 880
+        let panelH: CGFloat = 580
         let sf = screen.frame
         let panel = IslandPanel(
             contentRect: NSRect(x: sf.midX - panelW/2, y: sf.maxY - panelH,
@@ -346,15 +348,82 @@ final class IslandWindowController: NSWindowController {
             setMode(.expanded)
         }
         state.lastActivity = .now
+        #if !APPSTORE
+        if view == .prompt || view == .overview {
+            autoCaptureWindowContextIfNeeded(force: true)
+            startContextSyncTimer()
+        } else {
+            stopContextSyncTimer()
+        }
+        #endif
+    }
+
+    func autoCaptureWindowContextIfNeeded(force: Bool = false) {
+        #if !APPSTORE
+        // Never overwrite if user explicitly attached a file or copied to clipboard
+        if case .file = state.promptContext { return }
+        if case .clipboard = state.promptContext { return }
+
+        let targetApp: NSRunningApplication? = {
+            if let front = NSWorkspace.shared.frontmostApplication,
+               front.bundleIdentifier != Bundle.main.bundleIdentifier {
+                return front
+            }
+            if let last = state.lastExternalApp,
+               last.bundleIdentifier != Bundle.main.bundleIdentifier {
+                return last
+            }
+            return nil
+        }()
+
+        if let ctx = WindowContextCapture.captureActive(from: targetApp) {
+            if let targetApp = targetApp ?? NSWorkspace.shared.frontmostApplication,
+               targetApp.bundleIdentifier != Bundle.main.bundleIdentifier {
+                state.lastExternalApp = targetApp
+            }
+            if let dismissed = state.dismissedContextKey, ctx.contextKey == dismissed && !force {
+                return
+            }
+            if state.promptContext != ctx {
+                state.promptContext = ctx
+            }
+        }
+        #endif
+    }
+
+    private func startContextSyncTimer() {
+        contextSyncTimer?.invalidate()
+        let timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                guard self.state.mode == .expanded && (self.state.view == .prompt || self.state.view == .overview) else {
+                    self.stopContextSyncTimer()
+                    return
+                }
+                self.autoCaptureWindowContextIfNeeded()
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        contextSyncTimer = timer
+    }
+
+    private func stopContextSyncTimer() {
+        contextSyncTimer?.invalidate()
+        contextSyncTimer = nil
     }
 
     func collapse() {
         guard fsm.isHeldOpen?() != true else { return }
         state.isPinned = false
         finishedPinTimer?.cancel()
+        stopContextSyncTimer()
         // Keep the FSM in step with what is on screen (home/coucou → petit now).
         fsm.collapse()
-        setMode(.compact)
+        setMode(hasNotch ? .hidden : .compact)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+            guard let self, self.state.mode != .expanded else { return }
+            self.state.view = .prompt
+        }
         window?.resignKey()
     }
 
@@ -365,6 +434,28 @@ final class IslandWindowController: NSWindowController {
             Task { @MainActor in
                 guard let self = self else { return }
                 if event.keyCode == 53 { // Escape
+                    if self.state.mode == .expanded && !self.state.isPinned {
+                        self.collapse()
+                    }
+                }
+            }
+        }
+
+        // Global mouse monitor: clicking outside Coucou collapses it
+        mouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+            Task { @MainActor in
+                guard let self = self else { return }
+                if self.state.mode == .expanded && !self.state.isPinned {
+                    self.collapse()
+                }
+            }
+        }
+
+        // Window loss of focus collapses Coucou
+        if let win = window {
+            NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification, object: win, queue: .main) { [weak self] _ in
+                Task { @MainActor in
+                    guard let self = self else { return }
                     if self.state.mode == .expanded && !self.state.isPinned {
                         self.collapse()
                     }
@@ -480,7 +571,7 @@ final class IslandWindowController: NSWindowController {
                 let pressed = event.modifierFlags.intersection([.command, .control, .option, .shift]).rawValue
                 guard pressed == self.state.hotkeyFlags, event.keyCode == self.state.hotkeyCode else { return }
                 if self.state.mode == .hidden || self.state.mode == .compact {
-                    self.expand(to: .overview)
+                    self.expand(to: .prompt)
                 }
             }
         }
@@ -495,6 +586,11 @@ final class IslandWindowController: NSWindowController {
             if let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
                app.bundleIdentifier != ourBundle {
                 self.state.lastExternalApp = app
+                #if !APPSTORE
+                if self.state.view == .prompt || self.state.view == .overview {
+                    self.autoCaptureWindowContextIfNeeded(force: true)
+                }
+                #endif
             }
         }
     }
@@ -681,9 +777,10 @@ final class IslandWindowController: NSWindowController {
     // MARK: - Coordinate conversion: window (AppKit, y-up) → island coords (y-down, 0,0 = island top-left)
 
     func windowToIsland(_ loc: CGPoint) -> CGPoint {
-        let panelH = window?.frame.height ?? 320
-        let panelW = window?.frame.width  ?? 720
-        let islandLeft = (panelW - IslandConst.expandedWidth) / 2
+        let panelH = window?.frame.height ?? 580
+        let panelW = window?.frame.width  ?? 880
+        let currentW = state.isLargeExpanded ? IslandConst.largeExpandedWidth : IslandConst.expandedWidth
+        let islandLeft = (panelW - currentW) / 2
         // Island is glued to panel top; its bottom in AppKit = panelH - 176
         return CGPoint(
             x: loc.x - islandLeft,
@@ -695,12 +792,12 @@ final class IslandWindowController: NSWindowController {
 
     func defaultView() -> IslandView {
         if state.pendingApproval != nil { return .approval }
-        return state.tasks.isEmpty ? .empty : .overview
+        return .prompt
     }
 
     func baseMode() -> IslandMode {
         guard state.isPresent else { return .hidden }
-        return state.tasks.isEmpty ? .hidden : .compact
+        return .compact
     }
 
     // MARK: - Activity reset (call on any user interaction in island)
@@ -748,16 +845,22 @@ final class IslandWindowController: NSWindowController {
 
     private func isBotHit(_ windowPoint: CGPoint) -> Bool {
         let s = AppState.shared
-        let panelH = window?.frame.height ?? 320
-        let panelW = window?.frame.width  ?? 720
+        let panelH = window?.frame.height ?? 580
+        let panelW = window?.frame.width  ?? 880
         let (islandW, fixedH) = islandSize(mode: s.mode, view: s.view,
-                                            progress: s.uploadProgress, nw: notchW, nh: notchH)
+                                            progress: s.uploadProgress,
+                                            hasProactiveSuggestion: s.proactiveSuggestion != nil,
+                                            isLarge: s.isLargeExpanded,
+                                            nw: notchW, nh: notchH)
         // Chat view resizes dynamically — must match IslandContainer.chatPromptHeight
         let islandH: CGFloat
         if s.mode == .expanded && s.view == .prompt {
-            let base: CGFloat = 240
+            let base: CGFloat = s.isLargeExpanded ? 400 : 240
             let perMsg: CGFloat = 40
-            islandH = min(300, base + CGFloat(s.chatHistory.count) * perMsg)
+            let maxH: CGFloat = s.isLargeExpanded ? 520 : 300
+            islandH = min(maxH, base + CGFloat(s.chatHistory.count) * perMsg)
+        } else if s.mode == .expanded && s.view == .history {
+            islandH = s.isLargeExpanded ? 480 : 280
         } else {
             islandH = fixedH
         }
@@ -817,12 +920,18 @@ final class IslandPanel: NSPanel {
     func currentIslandFrame(nw: CGFloat, nh: CGFloat) -> CGRect {
         let s = AppState.shared
         let (w, fixedH) = islandSize(mode: s.mode, view: s.view,
-                                      progress: s.uploadProgress, nw: nw, nh: nh)
+                                      progress: s.uploadProgress,
+                                      hasProactiveSuggestion: s.proactiveSuggestion != nil,
+                                      isLarge: s.isLargeExpanded,
+                                      nw: nw, nh: nh)
         let h: CGFloat
         if s.mode == .expanded && s.view == .prompt {
-            let base: CGFloat = 240
+            let base: CGFloat = s.isLargeExpanded ? 400 : 240
             let perMsg: CGFloat = 40
-            h = min(300, base + CGFloat(s.chatHistory.count) * perMsg)
+            let maxH: CGFloat = s.isLargeExpanded ? 520 : 300
+            h = min(maxH, base + CGFloat(s.chatHistory.count) * perMsg)
+        } else if s.mode == .expanded && s.view == .history {
+            h = s.isLargeExpanded ? 480 : 280
         } else {
             h = fixedH
         }
@@ -859,6 +968,9 @@ extension Notification.Name {
     static let botSetTgEs       = Notification.Name("notchBuddy.botSetTgEs")
     static let botGulp          = Notification.Name("notchBuddy.botGulp")
     static let botMorphTo       = Notification.Name("notchBuddy.botMorphTo")
+    static let botSquash        = Notification.Name("notchBuddy.botSquash")
+    static let botRoll          = Notification.Name("notchBuddy.botRoll")
+    static let botParticle      = Notification.Name("notchBuddy.botParticle")
     static let islandAction     = Notification.Name("notchBuddy.islandAction")
     static let islandCollapse   = Notification.Name("notchBuddy.islandCollapse")
     static let openFullSettings = Notification.Name("notchBuddy.openFullSettings")
@@ -869,17 +981,25 @@ extension Notification.Name {
     static let greetingInterrupt = Notification.Name("notchBuddy.greetingInterrupt")
 }
 
-// MARK: - islandSize (takes real notch dimensions)
-
 func islandSize(mode: IslandMode, view: IslandView,
                 progress: Double = 0,
+                hasProactiveSuggestion: Bool = false,
+                isLarge: Bool = false,
                 nw: CGFloat = IslandConst.notchWidth,
                 nh: CGFloat = IslandConst.notchHeight) -> (CGFloat, CGFloat) {
+    let safeAreaTop = max(nh, 33)
+    if hasProactiveSuggestion && mode != .expanded {
+        // Shelf extends immediately below the physical notch danger area
+        return (max(nw + 140, 390), safeAreaTop + 40)
+    }
     switch mode {
     case .hidden:   return (nw, nh)
     case .compact:  return (nw + 160, nh)
     case .expanded:
         let layout = IslandConst.viewLayouts[view]!
-        return (IslandConst.expandedWidth, layout.height)
+        let width = isLarge ? IslandConst.largeExpandedWidth : IslandConst.expandedWidth
+        let height = isLarge ? max(layout.height + 140, 380) : layout.height
+        return (width, height)
     }
 }
+

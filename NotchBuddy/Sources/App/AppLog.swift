@@ -47,3 +47,23 @@ func appendAppLog(_ fileName: String, _ message: String,
         try? fm.setAttributes([.posixPermissions: 0o600 as NSNumber], ofItemAtPath: logFile.path)
     }
 }
+
+public func coucouLog(_ message: String) {
+    let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
+    let line = "\(f.string(from: Date())) [Coucou] \(message)\n"
+    NSLog("[Coucou] %@", message)
+    appendAppLog("coucou_agent.log", message)
+
+    let tmpLog = URL(fileURLWithPath: "/tmp/coucou_app.log")
+    if let data = line.data(using: .utf8) {
+        if FileManager.default.fileExists(atPath: tmpLog.path) {
+            if let handle = try? FileHandle(forWritingTo: tmpLog) {
+                handle.seekToEndOfFile()
+                handle.write(data)
+                try? handle.close()
+            }
+        } else {
+            try? data.write(to: tmpLog, options: .atomic)
+        }
+    }
+}

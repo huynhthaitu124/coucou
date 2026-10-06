@@ -9,7 +9,12 @@ final class AppState: ObservableObject {
 
     // Island state
     @Published var mode: IslandMode = .hidden
-    @Published var view: IslandView = .overview
+    @Published var view: IslandView = .prompt
+
+    // Hover to expand setting
+    @Published var expandOnHover: Bool = false {
+        didSet { UserDefaults.standard.set(expandOnHover, forKey: "expandOnHover") }
+    }
 
     // Tasks
     @Published var tasks: [AgentTask] = []
@@ -51,6 +56,11 @@ final class AppState: ObservableObject {
     // Sound enabled — persisted
     @Published var soundEnabled: Bool = true {
         didSet { UserDefaults.standard.set(soundEnabled, forKey: "soundEnabled") }
+    }
+
+    // Large expanded mode — persisted
+    @Published var isLargeExpanded: Bool = UserDefaults.standard.bool(forKey: "coucouIsLargeExpanded") {
+        didSet { UserDefaults.standard.set(isLargeExpanded, forKey: "coucouIsLargeExpanded") }
     }
 
     // Claude model used by the chat and the search — persisted
@@ -142,6 +152,10 @@ final class AppState: ObservableObject {
 
     // Context for prompt (window attach / file)
     @Published var promptContext: PromptContext? = nil
+    var dismissedContextKey: String? = nil
+
+    // Proactive Autonomous AI Suggestion (from 24/7 Local Observer)
+    @Published var proactiveSuggestion: ProactiveSuggestion? = nil
 
     // Dropped file (set during upload flow)
     @Published var droppedFile: DroppedFile? = nil
@@ -233,8 +247,88 @@ final class AppState: ObservableObject {
     @Published var notionLoaded: Bool = false
     @Published var notionError: String? = nil
 
-    // Chat conversation history
+    // Chat conversation history & saved sessions
     @Published var chatHistory: [ChatMessage] = []
+    @Published var sessions: [ChatSession] = []
+    @Published var currentSessionId: UUID? = nil
+
+    func archiveCurrentSession() {
+        guard !chatHistory.isEmpty else { return }
+        let savedMsgs = chatHistory.map { msg -> SavedChatMessage in
+            SavedChatMessage(
+                id: msg.id,
+                role: (msg.role == .user) ? "user" : "assistant",
+                content: msg.content,
+                thinking: msg.thinking,
+                steps: msg.steps.map { SavedAssistantWorkStep(id: $0.id, tool: $0.tool, title: $0.title, detail: $0.detail, isDone: $0.isDone) },
+                durationSeconds: msg.durationSeconds,
+                creditsUsed: msg.creditsUsed
+            )
+        }
+        let firstUser = chatHistory.first(where: { $0.role == .user })?.content ?? "Phiên chat mới"
+        let cleanTitle = String(firstUser.prefix(45)).trimmingCharacters(in: .whitespacesAndNewlines)
+        let finalTitle = cleanTitle.isEmpty ? "Phiên chat" : cleanTitle
+
+        if let currId = currentSessionId, let idx = sessions.firstIndex(where: { $0.id == currId }) {
+            sessions[idx].messages = savedMsgs
+            sessions[idx].updatedAt = Date()
+            sessions[idx].title = finalTitle
+        } else {
+            let newId = currentSessionId ?? UUID()
+            currentSessionId = newId
+            let newSession = ChatSession(id: newId, title: finalTitle, createdAt: Date(), updatedAt: Date(), messages: savedMsgs)
+            sessions.insert(newSession, at: 0)
+        }
+        saveSessionsToDisk()
+    }
+
+    func loadSession(_ session: ChatSession) {
+        archiveCurrentSession()
+        currentSessionId = session.id
+        chatHistory = session.messages.map { sMsg in
+            ChatMessage(
+                id: sMsg.id,
+                role: (sMsg.role == "user") ? .user : .assistant,
+                content: sMsg.content,
+                thinking: sMsg.thinking,
+                steps: sMsg.steps.map { AssistantWorkStep(id: $0.id, tool: $0.tool, title: $0.title, detail: $0.detail, isDone: $0.isDone) },
+                isRunning: false,
+                durationSeconds: sMsg.durationSeconds,
+                creditsUsed: sMsg.creditsUsed
+            )
+        }
+        ClaudeService.shared.restoreConversation(messages: chatHistory)
+        view = .prompt
+    }
+
+    func deleteSession(id: UUID) {
+        sessions.removeAll(where: { $0.id == id })
+        if currentSessionId == id {
+            currentSessionId = nil
+            chatHistory.removeAll()
+            ClaudeService.shared.clearConversation()
+        }
+        saveSessionsToDisk()
+    }
+
+    func clearAllSessions() {
+        sessions.removeAll()
+        currentSessionId = nil
+        saveSessionsToDisk()
+    }
+
+    private func saveSessionsToDisk() {
+        if let data = try? JSONEncoder().encode(sessions) {
+            UserDefaults.standard.set(data, forKey: "savedChatSessions")
+        }
+    }
+
+    private func loadSessionsFromDisk() {
+        if let data = UserDefaults.standard.data(forKey: "savedChatSessions"),
+           let loaded = try? JSONDecoder().decode([ChatSession].self, from: data) {
+            sessions = loaded
+        }
+    }
 
     // Pending approval request from Claude Code hook
     @Published var pendingApproval: ApprovalInfo? = nil
@@ -257,6 +351,7 @@ final class AppState: ObservableObject {
         }
         if let v = ud.object(forKey: "absenceInterval")   as? Double { absenceInterval   = v }
         if let v = ud.object(forKey: "greetThreshold")    as? Double { greetThresholdSeconds = v }
+        if let v = ud.object(forKey: "expandOnHover")   as? Bool   { expandOnHover   = v }
         if let v = ud.object(forKey: "hotkeyEnabled") as? Bool  { hotkeyEnabled = v }
         if let v = ud.object(forKey: "hotkeyFlags")   as? Int   { hotkeyFlags = UInt(v) }
         if let v = ud.object(forKey: "hotkeyCode")    as? Int   { hotkeyCode = UInt16(v) }
@@ -276,6 +371,9 @@ final class AppState: ObservableObject {
 
         // Always load integration pills
         loadIntegrationTasks()
+
+        // Load saved chat session history
+        loadSessionsFromDisk()
     }
 
     // MARK: - Computed
@@ -425,9 +523,52 @@ final class AppState: ObservableObject {
 
 // MARK: - Supporting types
 
-enum PromptContext {
+public enum PromptContext: Equatable {
     case window(appName: String, title: String, url: String?)
     case file(name: String, fileURL: URL?)
+    case clipboard(sourceApp: String, sourceTitle: String, sourceURL: String?, snippet: String)
+
+    public var contextKey: String {
+        switch self {
+        case .window(let appName, let title, let url):
+            return "\(appName):\(title):\(url ?? "")"
+        case .file(let name, let url):
+            return "file:\(name):\(url?.path ?? "")"
+        case .clipboard(let sourceApp, let sourceTitle, let sourceURL, let snippet):
+            return "clipboard:\(sourceApp):\(sourceTitle):\(sourceURL ?? ""):\(snippet.prefix(50))"
+        }
+    }
+}
+
+public struct ProactiveSuggestion: Identifiable, Equatable {
+    public let id: UUID
+    public let icon: String
+    public let title: String
+    public let detail: String?
+    public let actionQuery: String
+    public let context: PromptContext?
+    public let isExecutableLocal: Bool
+    public let timestamp: Date
+
+    public init(
+        id: UUID = UUID(),
+        icon: String = "sparkles",
+        title: String,
+        detail: String? = nil,
+        actionQuery: String,
+        context: PromptContext? = nil,
+        isExecutableLocal: Bool = false,
+        timestamp: Date = Date()
+    ) {
+        self.id = id
+        self.icon = icon
+        self.title = title
+        self.detail = detail
+        self.actionQuery = actionQuery
+        self.context = context
+        self.isExecutableLocal = isExecutableLocal
+        self.timestamp = timestamp
+    }
 }
 
 struct DroppedFile {
@@ -564,8 +705,112 @@ struct NotionPage: Identifiable {
 
 enum ChatRole { case user, assistant }
 
+struct AssistantWorkStep: Identifiable, Equatable {
+    var id: String = UUID().uuidString
+    var tool: String
+    var title: String
+    var detail: String? = nil
+    var isDone: Bool = false
+}
+
 struct ChatMessage: Identifiable {
-    let id = UUID()
+    var id: UUID = UUID()
     let role: ChatRole
-    let content: String
+    var content: String
+    var thinking: String? = nil
+    var steps: [AssistantWorkStep] = []
+    var isRunning: Bool = false
+    var startedAt: Date = Date()
+    var durationSeconds: Int? = nil
+    var creditsUsed: Double? = nil
+
+    var creditString: String {
+        if let c = creditsUsed {
+            if c == 0 {
+                return "0.000 credits (Jev Local)"
+            }
+            return String(format: "%.3f credits", c)
+        }
+        let wordCount = content.split { $0.isWhitespace }.count
+        let approxTokens = max(24, wordCount * 2 + (steps.count * 35))
+        let estCredits = Double(approxTokens) * 0.000012
+        return String(format: "%.3f credits", max(0.001, estCredits))
+    }
+
+    init(
+        id: UUID = UUID(),
+        role: ChatRole,
+        content: String,
+        thinking: String? = nil,
+        steps: [AssistantWorkStep] = [],
+        isRunning: Bool = false,
+        startedAt: Date = Date(),
+        durationSeconds: Int? = nil,
+        creditsUsed: Double? = nil
+    ) {
+        self.id = id
+        self.role = role
+        self.content = content
+        self.thinking = thinking
+        self.steps = steps
+        self.isRunning = isRunning
+        self.startedAt = startedAt
+        self.durationSeconds = durationSeconds
+        self.creditsUsed = creditsUsed
+    }
+}
+
+// MARK: - Saved Chat Sessions Models
+
+struct SavedAssistantWorkStep: Codable, Equatable {
+    var id: String
+    var tool: String
+    var title: String
+    var detail: String?
+    var isDone: Bool
+}
+
+struct SavedChatMessage: Codable, Identifiable, Equatable {
+    var id: UUID
+    var role: String
+    var content: String
+    var thinking: String?
+    var steps: [SavedAssistantWorkStep]
+    var durationSeconds: Int?
+    var creditsUsed: Double?
+}
+
+struct ChatSession: Identifiable, Codable, Equatable {
+    var id: UUID = UUID()
+    var title: String
+    var createdAt: Date = Date()
+    var updatedAt: Date = Date()
+    var messages: [SavedChatMessage]
+
+    var formattedDate: String {
+        let calendar = Calendar.current
+        if calendar.isDateInToday(updatedAt) {
+            let df = DateFormatter()
+            df.dateFormat = "HH:mm"
+            return "Hôm nay, \(df.string(from: updatedAt))"
+        } else if calendar.isDateInYesterday(updatedAt) {
+            let df = DateFormatter()
+            df.dateFormat = "HH:mm"
+            return "Hôm qua, \(df.string(from: updatedAt))"
+        } else {
+            let df = DateFormatter()
+            df.dateFormat = "dd/MM"
+            return df.string(from: updatedAt)
+        }
+    }
+
+    var previewText: String? {
+        if let last = messages.last {
+            let text = last.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !text.isEmpty {
+                return text
+            }
+        }
+        return nil
+    }
 }
