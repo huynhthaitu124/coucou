@@ -3623,7 +3623,7 @@ struct ContextChip: View {
     }
 }
 
-// MARK: - Proactive Suggestion Card (Warp-style inline card)
+// MARK: - Proactive Suggestion Card (Unified with Notch Live Activity)
 
 struct ProactiveSuggestionInlineCard: View {
     let suggestion: ProactiveSuggestion
@@ -3631,90 +3631,74 @@ struct ProactiveSuggestionInlineCard: View {
     @State private var isHovered = false
 
     var body: some View {
-        HStack(spacing: 10) {
-            ZStack {
-                Circle()
-                    .fill(LinearGradient(
-                        colors: [Color(hex: "#FF6B5B"), Color(hex: "#F7B32B"), Color(hex: "#38BDF8"), Color(hex: "#A78BFA")],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    ))
-                    .frame(width: 26, height: 26)
-                Image(systemName: suggestion.icon)
-                    .font(.system(size: 11.5, weight: .bold))
-                    .foregroundColor(.white)
-            }
-
+        HStack(spacing: 12) {
+            // Ultra-short title and punchy detail (no icon, no bulky tags)
             VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 5) {
-                    Text("GỢI Ý TỪ SENTINEL AI 24/7")
-                        .font(.system(size: 8.5, weight: .bold))
-                        .foregroundColor(Color(hex: "#A78BFA"))
-                    Circle()
-                        .fill(Color(hex: "#10B981"))
-                        .frame(width: 4.5, height: 4.5)
-                }
-
                 Text(suggestion.title)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(Color(hex: "#F1F2F4"))
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundColor(Color(hex: "#F9FAFB"))
                     .lineLimit(1)
 
-                if let detail = suggestion.detail {
+                if let detail = suggestion.detail, !detail.isEmpty {
                     Text(detail)
-                        .font(.system(size: 10.5))
+                        .font(.system(size: 9.5))
                         .foregroundColor(Color(hex: "#9CA3AF"))
-                        .lineLimit(2)
+                        .lineLimit(1)
                 }
+            }
+            .contentShape(Rectangle())
+            .onTapGesture {
+                CoucouSentinel.shared.acceptSuggestion(suggestion, state: state)
             }
 
             Spacer(minLength: 8)
 
+            // Action button ("Thực hiện")
             Button {
                 CoucouSentinel.shared.acceptSuggestion(suggestion, state: state)
             } label: {
-                HStack(spacing: 4) {
-                    Text("Thực hiện")
-                        .font(.system(size: 11, weight: .semibold))
-                    Image(systemName: "arrow.right")
-                        .font(.system(size: 9.5, weight: .bold))
-                }
-                .foregroundColor(Color(hex: "#0B0C0E"))
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .background(Color.white)
-                .clipShape(Capsule())
+                Text("Thực hiện")
+                    .font(.system(size: 10.5, weight: .semibold))
+                    .foregroundColor(Color(hex: "#0B0C0E"))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4.5)
+                    .background(
+                        LinearGradient(
+                            colors: [Color.white, Color(hex: "#E5E7EB")],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
+                    .clipShape(Capsule())
+                    .shadow(color: Color.black.opacity(0.25), radius: 2, y: 1)
             }
             .buttonStyle(.plain)
+            .onHover { hovering in
+                NotificationCenter.default.post(name: .botSetTgEs, object: hovering ? CGFloat(1.18) : CGFloat(1.0))
+            }
 
+            // Dismiss button
             Button {
                 CoucouSentinel.shared.dismissSuggestion(state: state)
             } label: {
                 Image(systemName: "xmark")
-                    .font(.system(size: 9, weight: .bold))
+                    .font(.system(size: 8, weight: .bold))
                     .foregroundColor(Color(hex: "#9CA3AF"))
-                    .padding(5)
-                    .background(Color.white.opacity(0.08))
+                    .frame(width: 20, height: 20)
+                    .background(Color.white.opacity(0.12))
                     .clipShape(Circle())
             }
             .buttonStyle(.plain)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8.5)
         .background(
-            RoundedRectangle(cornerRadius: 14)
-                .fill(Color(hex: "#14161D").opacity(0.97))
+            RoundedRectangle(cornerRadius: 11)
+                .fill(Color(hex: "#12141A").opacity(0.96))
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 14)
-                .stroke(
-                    LinearGradient(
-                        colors: [Color.white.opacity(0.24), Color(hex: "#A78BFA").opacity(0.35)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    ),
-                    lineWidth: 1
-                )
+            RoundedRectangle(cornerRadius: 11)
+                .stroke(Color.white.opacity(0.08), lineWidth: 0.8)
         )
         .overlay(alignment: .bottom) {
             SuggestionProgressBar(
@@ -3726,10 +3710,10 @@ struct ProactiveSuggestionInlineCard: View {
                     CoucouSentinel.shared.dismissSuggestion(state: state)
                 }
             }
-            .padding(.horizontal, 14)
+            .padding(.horizontal, 12)
             .padding(.bottom, 2)
         }
-        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .clipShape(RoundedRectangle(cornerRadius: 11))
         .onHover { hovering in
             isHovered = hovering
         }

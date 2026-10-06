@@ -493,6 +493,8 @@ final class IslandWindowController: NSWindowController {
             guard let self else { return event }
             MainActor.assumeIsolated {
                 guard self.wasInIsland else { return }
+                // If a proactive suggestion is active, let its SwiftUI buttons ("Thực hiện", "xmark") handle clicks directly
+                guard self.state.proactiveSuggestion == nil else { return }
                 self.pendingIslandClick = true
                 self.hoverTimer?.cancel()
                 self.botHoverTimer?.cancel()
@@ -548,7 +550,7 @@ final class IslandWindowController: NSWindowController {
                     finishDrag()
                 } else {
                     self.attachDragStart = nil
-                    if hadPendingClick && self.state.mode != .expanded {
+                    if hadPendingClick && self.state.mode != .expanded && self.state.proactiveSuggestion == nil {
                         if self.fsm.state == .home {
                             // FSM already thinks it's open (e.g. the view folded it): just reopen.
                             self.expand(to: self.defaultView())

@@ -122,6 +122,10 @@ struct NotchLiveActivityView: View {
                             .lineLimit(1)
                     }
                 }
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    CoucouSentinel.shared.acceptSuggestion(suggestion, state: state)
+                }
 
                 Spacer(minLength: 8)
 
