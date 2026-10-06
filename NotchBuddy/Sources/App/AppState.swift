@@ -160,12 +160,16 @@ final class AppState: ObservableObject {
     /// Uses SystemOne / JEV to classify and fuse overlapping contexts (e.g. copied text + open browser)
     func resolveContextWithJev(query: String? = nil) {
         if case .file = self.promptContext { return }
-        self.promptContext = SystemOneEngine.shared.classifyAndResolveContext(
+        let resolved = SystemOneEngine.shared.classifyAndResolveContext(
             windowCtx: self.activeWindowContext,
             clipboardCtx: self.recentClipboardContext,
             clipboardTime: self.recentClipboardTimestamp,
             userQuery: query
         )
+        if case .composite(_, _, _, _, _, _, _, let rel) = resolved {
+            coucouLog("[JEV Context Fusion] Fused window & clipboard into composite: \(rel.displayName)")
+        }
+        self.promptContext = resolved
     }
 
     // Proactive Autonomous AI Suggestion (from 24/7 Local Observer)

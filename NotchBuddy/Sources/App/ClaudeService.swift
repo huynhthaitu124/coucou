@@ -464,6 +464,7 @@ final class ClaudeService {
 
         // Fast-path decision via SystemOne Engine (sub-30ms non-autoregressive routing)
         let systemOneDecision = await SystemOneEngine.shared.decideAction(query: query, context: context)
+        coucouLog("[Jev Fast-Path] Routing intent '\(query.prefix(40))' in \(String(format: "%.1f", systemOneDecision.executionTimeMs))ms -> \(systemOneDecision.action.rawValue) (Engine: \(systemOneDecision.sourceEngine), Conf: \(String(format: "%.2f", systemOneDecision.confidence)))")
 
         // Update Jev step with outcome
         await MainActor.run {
