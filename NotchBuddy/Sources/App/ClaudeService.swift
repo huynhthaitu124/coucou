@@ -558,10 +558,11 @@ final class ClaudeService {
             }
         }
 
-        // Multi-turn tool execution loop (up to 8 iterations per query)
+        // Multi-turn tool execution loop (up to 20 iterations per complex task)
+        let maxIterations = 20
         var consecutiveBrowserEvalCount = 0
         var totalTokensEstimated = 0
-        for iteration in 0..<8 {
+        for iteration in 0..<maxIterations {
             var body: [String: Any] = [
                 "model": state.activeChatModel,
                 "messages": msgs,
@@ -804,10 +805,10 @@ final class ClaudeService {
             }
         }
 
-        // Safety net: if the loop exhausted all 8 iterations without a final response,
+        // Safety net: if the loop exhausted all iterations without a final response,
         // reset the UI to prevent permanent hang ("Đang suy nghĩ..." stuck forever).
-        let exhaustedMsg = "Coucou đã thực hiện \(8) bước nhưng chưa hoàn tất được yêu cầu. Thử lại với mô tả cụ thể hơn nhé."
-        coucouLog("[Agent Loop] Exhausted 8 steps without completing request.")
+        let exhaustedMsg = "Coucou đã thực hiện \(maxIterations) bước nhưng chưa hoàn tất được yêu cầu. Thử lại với mô tả cụ thể hơn nhé."
+        coucouLog("[Agent Loop] Exhausted \(maxIterations) steps without completing request.")
         conversationMessages.append(["role": "assistant", "content": exhaustedMsg])
         await MainActor.run {
             if messageIndex < state.chatHistory.count {
@@ -1352,7 +1353,8 @@ enum ComputerUseHarness {
 
         case "browser_eval":
             let js = arguments["javascript"] as? String ?? ""
-            return await executeBrowserEval(javascript: js)
+            let app = arguments["app_name"] as? String ?? arguments["browser"] as? String
+            return await executeBrowserEval(javascript: js, appName: app)
 
         case "window_control":
             let action = arguments["action"] as? String ?? ""
@@ -1733,8 +1735,9 @@ enum ComputerUseHarness {
                 if let img = NSImage(contentsOf: URL(fileURLWithPath: tmpImg)),
                    let cgImg = img.cgImage(forProposedRect: nil, context: nil, hints: nil) {
                     let req = VNRecognizeTextRequest()
-                    req.recognitionLevel = .fast
-                    req.usesLanguageCorrection = false
+                    req.recognitionLevel = .accurate
+                    req.usesLanguageCorrection = true
+                    req.recognitionLanguages = ["en-US", "vi-VN"]
                     let handler = VNImageRequestHandler(cgImage: cgImg, options: [:])
                     try? handler.perform([req])
 
@@ -1747,20 +1750,30 @@ enum ComputerUseHarness {
                     let clickH = img.size.height > 0 ? img.size.height : winRect.height
 
                     let observations = (req.results as? [VNRecognizedTextObservation]) ?? []
-                    var ocrItems: [String] = []
+                    var parsedItems: [(text: String, cx: Int, cy: Int)] = []
                     for obs in observations {
                         if let candidate = obs.topCandidates(1).first {
                             let text = candidate.string.trimmingCharacters(in: .whitespaces)
-                            guard !text.isEmpty else { continue }
+                            guard !text.isEmpty, text != "()", text != "[]", text != "{}" else { continue }
                             let box = obs.boundingBox
                             let cx = Int(winRect.origin.x + box.midX * clickW)
                             let cy = Int(winRect.origin.y + (1.0 - box.midY) * clickH)
-                            ocrItems.append("- \"\(text)\" [center: (\(cx), \(cy))]")
+                            parsedItems.append((text: text, cx: cx, cy: cy))
                         }
                     }
+
+                    // Sort in natural reading order: top-to-bottom, left-to-right
+                    parsedItems.sort { a, b in
+                        if abs(a.cy - b.cy) > 12 {
+                            return a.cy < b.cy
+                        }
+                        return a.cx < b.cx
+                    }
+
+                    let ocrItems = parsedItems.map { "- \"\($0.text)\" [center: (\($0.cx), \($0.cy))]" }
                     if !ocrItems.isEmpty {
                         lines.append("On-Screen Visible Elements (Vision OCR with screen coordinates):")
-                        lines.append(contentsOf: ocrItems.prefix(50))
+                        lines.append(contentsOf: ocrItems.prefix(200))
                     }
                 }
                 try? FileManager.default.removeItem(atPath: tmpImg)
@@ -2243,43 +2256,99 @@ enum ComputerUseHarness {
             try? await Task.sleep(nanoseconds: 300_000_000)
         }
 
-        let browserNames = ["Google Chrome", "Arc", "Brave Browser", "Microsoft Edge", "Safari"]
-        let browserName = await MainActor.run { () -> String? in
-            let workspace = NSWorkspace.shared
-            return workspace.runningApplications.first(where: {
-                browserNames.contains($0.localizedName ?? "")
-            })?.localizedName
+        // Try getting page text via direct JavaScript DOM extraction first
+        let jsExtract = "(() => { const title = document.title || ''; const url = window.location.href || ''; const text = document.body ? document.body.innerText : ''; return JSON.stringify({ title, url, text: text.substring(0, 15000) }); })()"
+        let evalResult = await executeBrowserEval(javascript: jsExtract)
+        if !evalResult.contains("Browser eval error") && !evalResult.contains("restricted") && !evalResult.contains("No running browser") {
+            if let data = evalResult.data(using: .utf8),
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let title = json["title"] as? String,
+               let url = json["url"] as? String,
+               let text = json["text"] as? String, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return """
+                === Active Browser Tab: "\(title)" ===
+                URL: \(url)
+                Page Text Content:
+                \(text)
+                --- End of Page Content ---
+                """
+            }
         }
 
-        guard let name = browserName else {
-            return "No running browser detected."
-        }
-
+        // Fallback: visual inspection via Vision OCR of the active browser
+        let targetApp = await resolveTargetBrowserApp()
+        let name = targetApp?.localizedName ?? "Google Chrome"
         return await inspectActiveWindow(appName: name)
     }
 
-    static func executeBrowserEval(javascript: String) async -> String {
-        return await MainActor.run { () -> String in
+    static func resolveTargetBrowserApp(appName: String? = nil) async -> NSRunningApplication? {
+        return await MainActor.run { () -> NSRunningApplication? in
             let workspace = NSWorkspace.shared
-            let browserApp = workspace.runningApplications.first(where: {
-                let id = $0.bundleIdentifier ?? ""
-                return id.contains("Chrome") || id.contains("Arc") || id.contains("Brave") || id.contains("Edge") || id.contains("Safari")
-            })
 
-            guard let app = browserApp, let bundleId = app.bundleIdentifier else {
-                return "No running browser found (Chrome, Safari, Arc, Brave, Edge)."
+            // If specific appName given
+            if let name = appName, !name.isEmpty {
+                return workspace.runningApplications.first(where: {
+                    $0.activationPolicy == .regular &&
+                    ($0.localizedName?.localizedCaseInsensitiveContains(name) == true ||
+                     $0.bundleIdentifier?.localizedCaseInsensitiveContains(name) == true)
+                })
             }
 
+            // Check frontmost app if it is a regular browser
+            if let front = workspace.frontmostApplication,
+               let bid = front.bundleIdentifier,
+               front.activationPolicy == .regular,
+               (bid == "com.google.Chrome" || bid.contains("Chrome") || bid.contains("Arc") ||
+                bid.contains("Brave") || bid.contains("Edge") || bid == "com.apple.Safari" || bid.contains("Firefox")) {
+                return front
+            }
+
+            // Check top on-screen layer 0 window in CGWindowList
+            if let infoList = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] {
+                for info in infoList {
+                    let layer = info[kCGWindowLayer as String] as? Int ?? -1
+                    let pid = info[kCGWindowOwnerPID as String] as? pid_t ?? 0
+                    guard layer == 0, pid > 0 else { continue }
+                    if let app = workspace.runningApplications.first(where: { $0.processIdentifier == pid && $0.activationPolicy == .regular }),
+                       let bid = app.bundleIdentifier {
+                        if bid == "com.google.Chrome" || bid.contains("Chrome") || bid.contains("Arc") ||
+                           bid.contains("Brave") || bid.contains("Edge") || bid == "com.apple.Safari" || bid.contains("Firefox") {
+                            return app
+                        }
+                    }
+                }
+            }
+
+            // Fallback: search running regular GUI browser applications (preferring Chrome/Arc/Edge over Safari)
+            let regularBrowsers = workspace.runningApplications.filter {
+                $0.activationPolicy == .regular &&
+                ($0.bundleIdentifier == "com.google.Chrome" ||
+                 $0.bundleIdentifier?.contains("Chrome") == true ||
+                 $0.bundleIdentifier?.contains("Arc") == true ||
+                 $0.bundleIdentifier?.contains("Brave") == true ||
+                 $0.bundleIdentifier?.contains("Edge") == true ||
+                 $0.bundleIdentifier == "com.apple.Safari")
+            }
+            return regularBrowsers.first(where: { $0.bundleIdentifier != "com.apple.Safari" }) ?? regularBrowsers.first
+        }
+    }
+
+    static func executeBrowserEval(javascript: String, appName: String? = nil) async -> String {
+        guard let app = await resolveTargetBrowserApp(appName: appName), let bundleId = app.bundleIdentifier else {
+            return "No running browser found (Chrome, Safari, Arc, Brave, Edge)."
+        }
+
+        return await MainActor.run { () -> String in
+            let name = app.localizedName ?? "Google Chrome"
             let escaped = javascript.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
             let script: String
-            let appName = app.localizedName ?? "Google Chrome"
 
             if bundleId.contains("Chrome") || bundleId.contains("Arc") || bundleId.contains("Brave") || bundleId.contains("Edge") {
-                script = "tell application \"\(appName)\" to execute active tab of front window javascript \"\(escaped)\""
-            } else if bundleId.contains("Safari") {
+                script = "tell application \"\(name)\" to execute active tab of front window javascript \"\(escaped)\""
+            } else if bundleId == "com.apple.Safari" {
                 script = "tell application \"Safari\" to do JavaScript \"\(escaped)\" in current tab of front window"
             } else {
-                return "Application '\(appName)' is not supported for direct DOM evaluation."
+                return "Application '\(name)' does not support direct DOM JavaScript execution."
             }
 
             var err: NSDictionary?
@@ -2287,9 +2356,9 @@ enum ComputerUseHarness {
             if let err {
                 let msg = (err["NSAppleScriptErrorMessage"] as? String) ?? "Unknown script error"
                 if msg.contains("Apple Events") || msg.contains("-1728") || msg.contains("-10004") {
-                    return "JavaScript execution via Apple Events is restricted in \(appName). Use 'browser_get_content' or 'inspect_window' to read page contents via Vision OCR."
+                    return "JavaScript execution via Apple Events is restricted in \(name). (In Chrome: View > Developer > Allow JavaScript from Apple Events). Use 'browser_get_content' or 'inspect_window' to read page contents via Vision OCR."
                 }
-                return "Browser eval error: \(msg)"
+                return "Browser eval error in \(name): \(msg)"
             }
             return res ?? "JavaScript executed successfully."
         }

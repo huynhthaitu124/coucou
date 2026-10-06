@@ -14,7 +14,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)
         setupMenuBarItem()
         setupIsland()
+        checkAccessibilityPermissions()
         CoucouSentinel.shared.startMonitoring(state: AppState.shared)
+    }
+
+    private func checkAccessibilityPermissions() {
+        let key = "AXTrustedCheckOptionPrompt" as CFString
+        let options = [key: true] as CFDictionary
+        let isTrusted = AXIsProcessTrustedWithOptions(options)
+        if !isTrusted {
+            coucouLog("[Accessibility] Coucou is not trusted in macOS Accessibility. Prompted user.")
+        } else {
+            coucouLog("[Accessibility] Coucou has full Accessibility trust.")
+        }
     }
 
     // MARK: - Menu bar
