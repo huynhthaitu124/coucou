@@ -706,6 +706,7 @@ struct IslandContentView: View {
 
 struct IslandHeader: View {
     @ObservedObject var state: AppState
+    @State private var copiedChat: Bool = false
 
     var body: some View {
         HStack(spacing: 0) {
@@ -731,6 +732,30 @@ struct IslandHeader: View {
                 .buttonStyle(.plain)
 
                 if !state.chatHistory.isEmpty {
+                    // Copy full chat button
+                    Button(action: {
+                        state.copyFullConversationToClipboard()
+                        copiedChat = true
+                        Task {
+                            try? await Task.sleep(nanoseconds: 2_000_000_000)
+                            copiedChat = false
+                        }
+                    }) {
+                        HStack(spacing: 3.5) {
+                            Image(systemName: copiedChat ? "checkmark" : "doc.on.doc")
+                                .font(.system(size: 10))
+                            Text(copiedChat ? "Đã copy" : "Copy")
+                                .font(.system(size: 11))
+                        }
+                        .foregroundColor(copiedChat ? Color(hex: "#10B981") : Color(hex: "#8E939C"))
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(Color.white.opacity(0.06))
+                        .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Sao chép toàn bộ cuộc trò chuyện vào Clipboard")
+
                     Button(action: {
                         withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
                             state.archiveCurrentSession()

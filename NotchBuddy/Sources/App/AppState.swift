@@ -346,6 +346,25 @@ final class AppState: ObservableObject {
         saveSessionsToDisk()
     }
 
+    func copyFullConversationToClipboard() {
+        guard !chatHistory.isEmpty else { return }
+        var parts: [String] = []
+        for msg in chatHistory {
+            let role = (msg.role == .user) ? "User" : "Coucou"
+            let text = msg.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !text.isEmpty {
+                parts.append("**\(role)**:\n\(text)")
+            }
+        }
+        guard !parts.isEmpty else { return }
+        let fullTranscript = parts.joined(separator: "\n\n---\n\n")
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(fullTranscript, forType: .string)
+        SoundEngine.shared.play("pop")
+        NotificationCenter.default.post(name: .triggerEmote, object: BotEmote.wink)
+    }
+
     private func saveSessionsToDisk() {
         if let data = try? JSONEncoder().encode(sessions) {
             UserDefaults.standard.set(data, forKey: "savedChatSessions")

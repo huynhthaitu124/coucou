@@ -763,14 +763,22 @@ struct PromptView: View {
                         ScrollView(.vertical, showsIndicators: false) {
                             VStack(alignment: .leading, spacing: 6) {
                                 ForEach(state.chatHistory) { msg in
-                                    ChatBubble(message: msg).id(msg.id)
+                                    ChatBubble(message: msg, state: state).id(msg.id)
                                 }
                                 if state.stateOverride != nil && (state.chatHistory.last?.content.isEmpty ?? true) && (state.chatHistory.last?.steps.isEmpty ?? true) {
                                     HStack { TypingDotsView(); Spacer(minLength: 32) }
                                         .id("typing")
                                 }
                             }
+                            .textSelection(.enabled)
                             .padding(.vertical, 2)
+                        }
+                        .contextMenu {
+                            Button {
+                                state.copyFullConversationToClipboard()
+                            } label: {
+                                Label("Sao chép toàn bộ hội thoại", systemImage: "doc.on.clipboard")
+                            }
                         }
                         .onChange(of: state.chatHistory.count) { _, _ in
                             if let last = state.chatHistory.last {
@@ -1502,7 +1510,6 @@ struct MarkdownContentView: View {
                 }
             }
         }
-        .textSelection(.enabled)
     }
 
     private func parseMarkdownBlocks(_ raw: String) -> [MarkdownBlock] {
@@ -1632,19 +1639,38 @@ struct MarkdownContentView: View {
 
 struct ChatBubble: View {
     let message: ChatMessage
+    @ObservedObject var state: AppState
+    @State private var isHovered: Bool = false
+    @State private var copied: Bool = false
 
     var body: some View {
         HStack(alignment: .top) {
             if message.role == .user {
                 Spacer(minLength: 32)
-                Text(message.content)
-                    .font(.system(size: 12.5))
-                    .foregroundColor(Color(hex: "#F1F2F4"))
-                    .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
-                    .padding(.horizontal, 10).padding(.vertical, 6)
-                    .background(Color.white.opacity(0.13))
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                HStack(alignment: .bottom, spacing: 4) {
+                    if isHovered {
+                        Button {
+                            copyText(message.content)
+                        } label: {
+                            Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                                .font(.system(size: 8.5))
+                                .foregroundColor(copied ? Color(hex: "#10B981") : Color(hex: "#9CA3AF"))
+                                .padding(4)
+                                .background(Color.white.opacity(0.1))
+                                .clipShape(Circle())
+                        }
+                        .buttonStyle(.plain)
+                        .help("Sao chép câu hỏi")
+                    }
+
+                    Text(message.content)
+                        .font(.system(size: 12.5))
+                        .foregroundColor(Color(hex: "#F1F2F4"))
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 10).padding(.vertical, 6)
+                        .background(Color.white.opacity(0.13))
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                }
             } else {
                 VStack(alignment: .leading, spacing: 6) {
                     AssistantWorkTrailView(
@@ -1659,7 +1685,7 @@ struct ChatBubble: View {
                     }
 
                     if !message.isRunning && (!message.content.isEmpty || !message.steps.isEmpty) {
-                        HStack(spacing: 5) {
+                        HStack(spacing: 8) {
                             Text(message.creditString)
                                 .font(.system(size: 9.5, weight: .medium, design: .monospaced))
                                 .foregroundColor(Color(hex: "#71717A"))
@@ -1672,6 +1698,29 @@ struct ChatBubble: View {
                                     .font(.system(size: 9.5, design: .monospaced))
                                     .foregroundColor(Color(hex: "#71717A"))
                             }
+
+                            Spacer()
+
+                            if !message.content.isEmpty {
+                                Button {
+                                    copyText(message.content)
+                                } label: {
+                                    HStack(spacing: 3) {
+                                        Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                                            .font(.system(size: 8))
+                                        Text(copied ? "Đã copy" : "Copy")
+                                            .font(.system(size: 9))
+                                    }
+                                    .foregroundColor(copied ? Color(hex: "#10B981") : Color(hex: "#71717A"))
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(Color.white.opacity(0.06))
+                                    .clipShape(Capsule())
+                                }
+                                .buttonStyle(.plain)
+                                .opacity(isHovered || copied ? 1 : 0)
+                                .help("Sao chép câu trả lời")
+                            }
                         }
                         .padding(.top, 1)
                         .padding(.leading, 1)
@@ -1679,6 +1728,35 @@ struct ChatBubble: View {
                 }
                 Spacer(minLength: 8)
             }
+        }
+        .onHover { hovering in
+            isHovered = hovering
+        }
+        .contextMenu {
+            if !message.content.isEmpty {
+                Button {
+                    copyText(message.content)
+                } label: {
+                    Label("Sao chép tin nhắn này", systemImage: "doc.on.doc")
+                }
+            }
+            Button {
+                state.copyFullConversationToClipboard()
+            } label: {
+                Label("Sao chép toàn bộ hội thoại", systemImage: "doc.on.clipboard")
+            }
+        }
+    }
+
+    private func copyText(_ str: String) {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(str, forType: .string)
+        SoundEngine.shared.play("pop")
+        copied = true
+        Task {
+            try? await Task.sleep(nanoseconds: 1_800_000_000)
+            copied = false
         }
     }
 }
