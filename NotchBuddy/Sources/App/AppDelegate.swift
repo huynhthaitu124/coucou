@@ -67,20 +67,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             placeBelowIsland(w)
             w.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true); return
         }
-        let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 780, height: 560),
-                           styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+        let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 560),
+                           styleMask: [.titled, .closable, .miniaturizable, .resizable],
                            backing: .buffered, defer: false)
-        win.title = "Settings — Coucou"
-        win.titlebarAppearsTransparent = true
-        win.titleVisibility = .hidden
-        win.toolbarStyle = .unified
-        win.isMovableByWindowBackground = true
-        win.backgroundColor = .clear
-
+        win.title = String(localized: "settings.window.title")
         let host = NSHostingView(rootView: SettingsView())
         host.sizingOptions = [.minSize]
         win.contentView = host
-        win.contentMinSize = NSSize(width: 680, height: 460)
+        win.contentMinSize = NSSize(width: 640, height: 420)
         win.isReleasedWhenClosed = false
         placeBelowIsland(win)
         settingsWindow = win

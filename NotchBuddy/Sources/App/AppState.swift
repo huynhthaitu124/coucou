@@ -254,15 +254,6 @@ final class AppState: ObservableObject {
         }
     }
 
-    // Coucou Theme (Liquid Glass, OLED Dark, Cyberpunk, Sakura, Matcha, Midnight)
-    @Published var coucouTheme: CoucouTheme = {
-        let raw = UserDefaults.standard.string(forKey: "coucouTheme") ?? CoucouTheme.liquidGlass.rawValue
-        return CoucouTheme(rawValue: raw) ?? .liquidGlass
-    }() {
-        didSet {
-            UserDefaults.standard.set(coucouTheme.rawValue, forKey: "coucouTheme")
-        }
-    }
 
     // Selected app language ("" = System, else BCP-47 code e.g. "fr")
     @Published var appLanguage: String = {
