@@ -250,133 +250,25 @@ struct SettingsView: View {
     // MARK: - Appearance section
 
     @ViewBuilder private var appearanceSection: some View {
-        // Theme Selector (Coucou Themes with Liquid Glass)
+        // Apple Native Liquid Glass Window style description
         GroupBox {
-            VStack(alignment: .leading, spacing: 14) {
-                HStack {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("Chủ đề & Hiệu ứng kính (Themes & Liquid Glass)")
-                            .font(.system(size: 13, weight: .semibold))
-                        Text("Tùy chọn phong cách hiển thị cho Dynamic Island, card popover và thanh trạng thái.")
-                            .font(.system(size: 11))
-                            .foregroundColor(.secondary)
-                    }
-                    Spacer()
-                    // Current Theme badge
-                    HStack(spacing: 6) {
-                        Image(systemName: state.coucouTheme.iconSymbol)
-                            .foregroundColor(Color(hex: state.coucouTheme.accentHex))
-                        Text(state.coucouTheme.displayName)
-                            .font(.system(size: 11, weight: .medium))
-                    }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Color(hex: state.coucouTheme.accentHex).opacity(0.15))
-                    .clipShape(Capsule())
+            HStack(alignment: .top, spacing: 14) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(Color(hex: "#38BDF8").opacity(0.12))
+                        .frame(width: 40, height: 40)
+                    Image(systemName: "drop.fill")
+                        .font(.system(size: 20))
+                        .foregroundColor(Color(hex: "#38BDF8"))
                 }
 
-                Divider()
-
-                LazyVGrid(columns: [
-                    GridItem(.flexible(), spacing: 12),
-                    GridItem(.flexible(), spacing: 12)
-                ], spacing: 12) {
-                    ForEach(CoucouTheme.allCases) { theme in
-                        Button {
-                            withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
-                                state.coucouTheme = theme
-                            }
-                            NSHapticFeedbackManager.defaultPerformer.perform(.generic, performanceTime: .now)
-                        } label: {
-                            VStack(alignment: .leading, spacing: 10) {
-                                HStack(alignment: .center, spacing: 10) {
-                                    ZStack {
-                                        RoundedRectangle(cornerRadius: 8)
-                                            .fill(
-                                                LinearGradient(
-                                                    colors: [Color(hex: theme.islandTopColor), Color(hex: theme.islandBottomColor)],
-                                                    startPoint: .topLeading,
-                                                    endPoint: .bottomTrailing
-                                                )
-                                            )
-                                            .frame(width: 32, height: 32)
-                                            .overlay(
-                                                RoundedRectangle(cornerRadius: 8)
-                                                    .stroke(Color.white.opacity(theme.rimHighlightOpacity), lineWidth: 1)
-                                            )
-
-                                        Image(systemName: theme.iconSymbol)
-                                            .font(.system(size: 14, weight: .semibold))
-                                            .foregroundColor(Color(hex: theme.accentHex))
-                                    }
-
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        HStack(spacing: 6) {
-                                            Text(theme.displayName)
-                                                .font(.system(size: 12, weight: .semibold))
-                                                .foregroundColor(.primary)
-
-                                            if theme.isGlass {
-                                                Text("Glass")
-                                                    .font(.system(size: 9, weight: .bold))
-                                                    .foregroundColor(Color(hex: "#38BDF8"))
-                                                    .padding(.horizontal, 5)
-                                                    .padding(.vertical, 1.5)
-                                                    .background(Color(hex: "#38BDF8").opacity(0.15))
-                                                    .clipShape(Capsule())
-                                            }
-                                        }
-
-                                        Text(theme.description)
-                                            .font(.system(size: 10.5))
-                                            .foregroundColor(.secondary)
-                                            .lineLimit(2)
-                                            .multilineTextAlignment(.leading)
-                                    }
-
-                                    Spacer(minLength: 4)
-
-                                    if state.coucouTheme == theme {
-                                        Image(systemName: "checkmark.circle.fill")
-                                            .font(.system(size: 16))
-                                            .foregroundColor(Color(hex: theme.accentHex))
-                                    } else {
-                                        Circle()
-                                            .stroke(Color.secondary.opacity(0.3), lineWidth: 1.5)
-                                            .frame(width: 16, height: 16)
-                                    }
-                                }
-
-                                // Color preview swatches
-                                HStack(spacing: 6) {
-                                    RoundedRectangle(cornerRadius: 4)
-                                        .fill(Color(hex: theme.islandTopColor))
-                                        .frame(height: 6)
-                                    RoundedRectangle(cornerRadius: 4)
-                                        .fill(Color(hex: theme.islandBottomColor))
-                                        .frame(height: 6)
-                                    RoundedRectangle(cornerRadius: 4)
-                                        .fill(Color(hex: theme.accentHex))
-                                        .frame(width: 20, height: 6)
-                                }
-                            }
-                            .padding(12)
-                            .background(
-                                RoundedRectangle(cornerRadius: 12)
-                                    .fill(state.coucouTheme == theme ? Color(hex: theme.accentHex).opacity(0.08) : Color(NSColor.controlBackgroundColor).opacity(0.6))
-                            )
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 12)
-                                    .stroke(
-                                        state.coucouTheme == theme
-                                            ? Color(hex: theme.accentHex).opacity(0.8)
-                                            : Color.primary.opacity(0.08),
-                                        lineWidth: state.coucouTheme == theme ? 1.5 : 1
-                                    )
-                            )
-                        }
-                        .buttonStyle(.plain)
-                    }
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Apple Native Liquid Glass Architecture")
+                        .font(.system(size: 13, weight: .semibold))
+                    Text("Cửa sổ Cài đặt sử dụng giao diện Native của Apple với cấu trúc NavigationSplitView và lớp kính mờ Liquid Glass (NSVisualEffectView underWindowBackground), hòa quyện trực quan vào màn hình macOS. Dynamic Island và các thẻ popover duy trì màu đen huyền thoại (OLED obsidian black) sắc nét nguyên bản.")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
             .padding(10)
@@ -499,26 +391,6 @@ struct SettingsView: View {
             }
             .padding(10)
         }
-
-        // Apple Design Info
-        GroupBox {
-            HStack(alignment: .top, spacing: 12) {
-                Image(systemName: "sparkles")
-                    .font(.system(size: 18))
-                    .foregroundColor(Color(hex: "#38BDF8"))
-                    .frame(width: 24, height: 24)
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Apple Native Liquid Glass Architecture")
-                        .font(.system(size: 12, weight: .semibold))
-                    Text("Giao diện cài đặt và đảo notch sử dụng hệ thống NSVisualEffectView kết hợp vật liệu kính mờ tự nhiên (translucent materials) chuẩn macOS Sequoia, hài hòa tuyệt đối với hình nền và chế độ hiển thị hệ thống.")
-                        .font(.system(size: 11))
-                        .foregroundColor(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            .padding(10)
-        }
     }
 
     private func outfitIcon(for outfit: Outfit) -> String {
@@ -542,42 +414,6 @@ struct SettingsView: View {
     // MARK: - General section
 
     @ViewBuilder private var generalSection: some View {
-        GroupBox("Appearance & Theme") {
-            HStack(spacing: 12) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(
-                            LinearGradient(
-                                colors: [Color(hex: state.coucouTheme.islandTopColor), Color(hex: state.coucouTheme.islandBottomColor)],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
-                        .frame(width: 36, height: 36)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 8)
-                                .stroke(Color.white.opacity(state.coucouTheme.rimHighlightOpacity), lineWidth: 1)
-                        )
-                    Image(systemName: state.coucouTheme.iconSymbol)
-                        .foregroundColor(Color(hex: state.coucouTheme.accentHex))
-                }
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Chủ đề: \(state.coucouTheme.displayName)")
-                        .font(.system(size: 12, weight: .semibold))
-                    Text("Tùy chọn phong cách Liquid Glass và trang phục Mochi tại mục Appearance.")
-                        .font(.system(size: 11))
-                        .foregroundColor(.secondary)
-                }
-                Spacer()
-                Button("Đổi chủ đề…") {
-                    selectedSection = "appearance"
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-            }
-            .padding(6)
-        }
-
         GroupBox(String(localized: "demo.groupbox.title")) {
             VStack(alignment: .leading, spacing: 8) {
                 Text(String(localized: "demo.description"))
