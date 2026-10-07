@@ -4498,60 +4498,7 @@ private func drawOutfitIcon(context: GraphicsContext, size: CGSize, outfit: Outf
 
 // MARK: - Card background
 
-// MARK: - Organic Wave Texture Layer (Fluid Caustic Ribbons)
-
-struct CardOrganicWaveLayer: View {
-    let color: Color
-    var time: Double = 0
-
-    var body: some View {
-        Canvas { ctx, size in
-            let w = size.width
-            let h = size.height
-            guard w > 0, h > 0 else { return }
-
-            // 3 undulating fluid wave ribbons that create natural depth & live motion
-            for i in 0..<3 {
-                let fi = CGFloat(i)
-                var path = Path()
-                let baseAmp = h * (0.16 + fi * 0.05)
-                // Continuous harmonic phase shift and gentle vertical drift
-                let phase = CGFloat(time) * (0.42 + fi * 0.16)
-                let waveDrift = sin(CGFloat(time) * 0.55 + fi * 1.35) * (h * 0.032)
-                let yMid = h * (0.42 + fi * 0.12) + waveDrift
-                let freq = (0.009 - fi * 0.0018)
-
-                path.move(to: CGPoint(x: 0, y: h))
-                path.addLine(to: CGPoint(x: 0, y: yMid + sin(phase + fi * 1.5) * baseAmp))
-
-                var x: CGFloat = 0
-                while x <= w {
-                    let y = yMid + sin(x * freq + phase + fi * 1.7) * baseAmp + cos(x * freq * 0.46 - phase * 0.68) * (baseAmp * 0.42)
-                    path.addLine(to: CGPoint(x: x, y: y))
-                    x += 10
-                }
-                path.addLine(to: CGPoint(x: w, y: h))
-                path.closeSubpath()
-
-                // Gradient anchors slightly drift with the motion creating liquid caustic refraction
-                let startX = w * (0.15 + sin(CGFloat(time) * 0.28 + fi) * 0.05)
-                let endX = w * (0.85 + cos(CGFloat(time) * 0.28 + fi) * 0.05)
-
-                ctx.fill(path, with: .linearGradient(
-                    Gradient(stops: [
-                        .init(color: color.opacity(0.13 - fi * 0.028), location: 0),
-                        .init(color: color.opacity(0.035), location: 0.45),
-                        .init(color: .clear, location: 1.0)
-                    ]),
-                    startPoint: CGPoint(x: startX, y: 0),
-                    endPoint: CGPoint(x: endX, y: h)
-                ))
-            }
-        }
-    }
-}
-
-// MARK: - Multi-Layer Optical Card Background
+// MARK: - Multi-Layer Optical Card Background (Bilateral Edge Spill)
 
 struct CardBackgroundLayer: View {
     let cardRadius: CGFloat
@@ -4562,131 +4509,143 @@ struct CardBackgroundLayer: View {
     var body: some View {
         TimelineView(.animation(paused: state.mode != .expanded)) { tl in
             let time = tl.date.timeIntervalSinceReferenceDate
-            let tlPulse = sin(time * 0.8) * 0.06
-            let brPulse = cos(time * 1.0) * 0.06
-            let haloPulse = sin(time * 1.6) * 0.09
-            let haloAlpha = 0.62 + sin(time * 1.6) * 0.12
+
+            // Gentle harmonic breathing & vertical gliding along the two lateral borders
+            let leftY = 0.50 + sin(time * 0.75) * 0.20
+            let rightY = 0.50 + cos(time * 0.85) * 0.20
+
+            let leftPulse = sin(time * 1.2) * 0.08
+            let rightPulse = cos(time * 1.3) * 0.08
+
+            let leftAlpha = 0.52 + leftPulse
+            let rightAlpha = 0.46 + rightPulse
+
+            let leftRadius: CGFloat = 190 + CGFloat(sin(time * 0.9)) * 30
+            let rightRadius: CGFloat = 200 + CGFloat(cos(time * 1.1)) * 30
 
             ZStack {
-                // 1. Deep Obsidian Base Plate
+                // 1. Deep Obsidian Base Plate (Nền đen OLED sâu thẳm)
                 RoundedRectangle(cornerRadius: cardRadius, style: .continuous)
                     .fill(
                         LinearGradient(
                             colors: [
-                                Color(hex: "#121318"),
-                                Color(hex: "#0C0D11")
+                                Color(hex: "#131418"),
+                                Color(hex: "#0C0D10")
                             ],
                             startPoint: .top,
                             endPoint: .bottom
                         )
                     )
 
-                // 2. Top-Left Ambient Ember / Radiant Corner Glow (Living breathing warmth)
+                // 2. Left Border Light Spill (Tràn viền bên trái - vệt sáng lượn sóng dọc viền trái)
                 RoundedRectangle(cornerRadius: cardRadius, style: .continuous)
                     .fill(
                         RadialGradient(
                             gradient: Gradient(stops: [
-                                .init(color: secondaryGlowColor.opacity(0.42 + tlPulse), location: 0),
-                                .init(color: secondaryGlowColor.opacity(0.16 + tlPulse * 0.5), location: 0.38),
-                                .init(color: .clear, location: 0.80)
+                                .init(color: effectiveBloomColor.opacity(leftAlpha), location: 0),
+                                .init(color: effectiveBloomColor.opacity(leftAlpha * 0.45), location: 0.35),
+                                .init(color: effectiveBloomColor.opacity(leftAlpha * 0.12), location: 0.65),
+                                .init(color: .clear, location: 0.95)
                             ]),
-                            center: .topLeading,
+                            center: UnitPoint(x: -0.05, y: leftY),
                             startRadius: 0,
-                            endRadius: 250 + CGFloat(sin(time * 0.6)) * 20
+                            endRadius: leftRadius
                         )
                     )
                     .blendMode(.plusLighter)
 
-                // 3. Bottom-Right Ambient Color Counterbalance (Living breathing counterbalance)
+                // 3. Right Border Light Spill (Tràn viền bên phải - vệt sáng lượn sóng dọc viền phải)
                 RoundedRectangle(cornerRadius: cardRadius, style: .continuous)
                     .fill(
                         RadialGradient(
                             gradient: Gradient(stops: [
-                                .init(color: effectiveBloomColor.opacity(0.38 + brPulse), location: 0),
-                                .init(color: effectiveBloomColor.opacity(0.14 + brPulse * 0.5), location: 0.42),
-                                .init(color: .clear, location: 0.82)
+                                .init(color: secondaryGlowColor.opacity(rightAlpha), location: 0),
+                                .init(color: secondaryGlowColor.opacity(rightAlpha * 0.45), location: 0.35),
+                                .init(color: secondaryGlowColor.opacity(rightAlpha * 0.12), location: 0.65),
+                                .init(color: .clear, location: 0.95)
                             ]),
-                            center: .bottomTrailing,
+                            center: UnitPoint(x: 1.05, y: rightY),
                             startRadius: 0,
-                            endRadius: 290 + CGFloat(cos(time * 0.7)) * 25
+                            endRadius: rightRadius
                         )
                     )
                     .blendMode(.plusLighter)
 
-                // 4. Bottom-Center Rising Ambient Glow (Harmonic oscillation)
+                // 4. Lateral Bilateral Horizontal Wash (Dải màu tràn đều ra 2 mép viền hai bên hông)
                 RoundedRectangle(cornerRadius: cardRadius, style: .continuous)
                     .fill(
-                        RadialGradient(
-                            gradient: Gradient(stops: [
-                                .init(color: effectiveBloomColor.opacity(0.46 + sin(time * 1.2) * 0.06), location: 0),
-                                .init(color: effectiveBloomColor.opacity(0.20 + sin(time * 1.2) * 0.03), location: 0.36),
-                                .init(color: .clear, location: 0.78)
-                            ]),
-                            center: UnitPoint(x: 0.5 + sin(time * 0.4) * 0.05, y: 1.15),
-                            startRadius: 0,
-                            endRadius: 280
+                        LinearGradient(
+                            stops: [
+                                .init(color: effectiveBloomColor.opacity(leftAlpha * 0.58), location: 0.0),
+                                .init(color: effectiveBloomColor.opacity(leftAlpha * 0.20), location: 0.15),
+                                .init(color: .clear, location: 0.38),
+                                .init(color: .clear, location: 0.62),
+                                .init(color: secondaryGlowColor.opacity(rightAlpha * 0.20), location: 0.85),
+                                .init(color: secondaryGlowColor.opacity(rightAlpha * 0.58), location: 1.0)
+                            ],
+                            startPoint: .leading,
+                            endPoint: .trailing
                         )
                     )
                     .blendMode(.plusLighter)
 
-                // 5. Organic Wave Texture Layer (Fluid Caustics with real-time flowing animation)
-                CardOrganicWaveLayer(color: effectiveBloomColor, time: time)
-                    .clipShape(RoundedRectangle(cornerRadius: cardRadius, style: .continuous))
-                    .blendMode(.screen)
-                    .opacity(0.68)
-
-                // 6. Character Backlight Halo (Living breathing spherical halo behind Mochi)
+                // 5. Character Backlight Halo (Vầng hào quang ấm áp thở nhịp nhàng sau Mochi)
                 GeometryReader { geo in
                     let haloX = geo.size.width > 220 ? 62.0 : geo.size.width * 0.22
                     let haloY = geo.size.height * 0.52
-                    let haloSize: CGFloat = 136.0 * (1.0 + CGFloat(haloPulse))
+                    let haloBreath = sin(time * 1.5) * 0.08
+                    let haloSize: CGFloat = 132.0 * (1.0 + CGFloat(haloBreath))
+                    let haloOpacity = 0.56 + haloBreath * 1.5
+
                     Circle()
                         .fill(
                             RadialGradient(
                                 gradient: Gradient(stops: [
-                                    .init(color: effectiveBloomColor.opacity(haloAlpha), location: 0),
-                                    .init(color: effectiveBloomColor.opacity(haloAlpha * 0.38), location: 0.42),
-                                    .init(color: .clear, location: 0.85)
+                                    .init(color: effectiveBloomColor.opacity(haloOpacity), location: 0),
+                                    .init(color: effectiveBloomColor.opacity(haloOpacity * 0.36), location: 0.40),
+                                    .init(color: .clear, location: 0.82)
                                 ]),
                                 center: .center,
-                                startRadius: 8,
-                                endRadius: (haloSize / 2)
+                                startRadius: 6,
+                                endRadius: haloSize / 2
                             )
                         )
                         .frame(width: haloSize, height: haloSize)
                         .position(x: haloX, y: haloY)
-                        .blur(radius: 20)
+                        .blur(radius: 18)
                         .blendMode(.plusLighter)
                 }
                 .clipShape(RoundedRectangle(cornerRadius: cardRadius, style: .continuous))
 
-                // 7. Top Specular Glass Sheen
+                // 6. Top Specular Glass Sheen (Lớp phản xạ mờ mép kính trên)
                 RoundedRectangle(cornerRadius: cardRadius, style: .continuous)
                     .fill(
                         LinearGradient(
                             stops: [
-                                .init(color: Color.white.opacity(0.08), location: 0.0),
-                                .init(color: Color.white.opacity(0.02), location: 0.16),
-                                .init(color: .clear, location: 0.42)
+                                .init(color: Color.white.opacity(0.07), location: 0.0),
+                                .init(color: Color.white.opacity(0.015), location: 0.16),
+                                .init(color: .clear, location: 0.38)
                             ],
                             startPoint: .top,
                             endPoint: .bottom
                         )
                     )
 
-                // 8. Specular Rim Bevel Stroke (Viền kính khúc xạ bắt sáng góc)
+                // 7. Dynamic Luminescent Rim Stroke (Viền bắt sáng tràn 2 bên viền đồng bộ)
                 RoundedRectangle(cornerRadius: cardRadius, style: .continuous)
                     .stroke(
                         LinearGradient(
                             stops: [
-                                .init(color: Color.white.opacity(0.14), location: 0),
-                                .init(color: Color.white.opacity(0.04), location: 0.5),
-                                .init(color: Color.clear, location: 1)
+                                .init(color: effectiveBloomColor.opacity(0.55 + leftPulse), location: 0.0),
+                                .init(color: Color.white.opacity(0.12), location: 0.25),
+                                .init(color: Color.white.opacity(0.04), location: 0.50),
+                                .init(color: Color.white.opacity(0.12), location: 0.75),
+                                .init(color: secondaryGlowColor.opacity(0.50 + rightPulse), location: 1.0)
                             ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
+                            startPoint: .leading,
+                            endPoint: .trailing
                         ),
-                        lineWidth: 0.85
+                        lineWidth: 1.0
                     )
             }
         }
