@@ -4498,7 +4498,7 @@ private func drawOutfitIcon(context: GraphicsContext, size: CGSize, outfit: Outf
 
 // MARK: - Card background
 
-// MARK: - Multi-Layer Optical Card Background (Unified Bottom Ambient Bloom)
+// MARK: - Multi-Layer Optical Card Background (Grokbot Bilateral Saddle Wave)
 
 struct CardBackgroundLayer: View {
     let cardRadius: CGFloat
@@ -4511,7 +4511,7 @@ struct CardBackgroundLayer: View {
         TimelineView(.animation(paused: state.mode != .expanded)) { tl in
             let time = tl.date.timeIntervalSinceReferenceDate
             let elapsed = time - lastTransitionTime
-            let surgeDuration: Double = 1.15
+            let surgeDuration: Double = 1.20
             let isSurging = elapsed < surgeDuration
 
             // Normalized transition progress p: 0.0 -> 1.0
@@ -4519,89 +4519,108 @@ struct CardBackgroundLayer: View {
             let ease = isSurging ? (1.0 - pow(1.0 - p, 3.0)) : 1.0
             let surge = isSurging ? sin(p * .pi) : 0.0
 
-            // Hơi thở nhẹ nhàng khi idle (tuyệt đối êm dịu, không có hình khối di chuyển)
+            // Hơi thở hữu cơ nhẹ nhàng khi idle (dao động chậm, êm dịu)
             let idleBreath = sin(time * 0.85) * 0.035
+            let leftBreath = sin(time * 0.90) * 0.04
+            let rightBreath = cos(time * 0.80) * 0.04
 
-            // Khi chuyển state: dải sáng từ đáy nở rộng dàn đều êm ái sang 2 góc dưới
-            let bloomRadius: CGFloat = 260 + CGFloat(ease) * 40 + CGFloat(surge) * 25
-            let bloomAlpha = 0.44 + idleBreath + surge * 0.22
+            // Độ mở rộng khi chuyển state: từ đáy dàn năng lượng mạnh ra 2 mỏm sóng biên
+            let surgeSpread = CGFloat(surge) * 35.0
 
             ZStack {
-                // 1. Deep Obsidian Base Plate (Nền đen OLED chuẩn ảnh gốc)
+                // 1. Deep Obsidian Base Plate (Nền đen OLED sâu chuẩn ảnh gốc)
                 RoundedRectangle(cornerRadius: cardRadius, style: .continuous)
                     .fill(
                         LinearGradient(
                             colors: [
-                                Color(hex: "#141518"),
-                                Color(hex: "#0E0F12")
+                                Color(hex: "#121316"),
+                                Color(hex: "#0A0B0E")
                             ],
                             startPoint: .top,
                             endPoint: .bottom
                         )
                     )
 
-                // 2. Unified Bottom Ambient Bloom (Dải sáng đáy liền mạch, dàn êm ái ra 2 góc dưới)
+                // 2. Bottom Center Valley (Vùng trũng đáy nối 2 mỏm sóng, lặn sâu ở giữa để không che chữ)
                 RoundedRectangle(cornerRadius: cardRadius, style: .continuous)
                     .fill(
                         RadialGradient(
                             gradient: Gradient(stops: [
-                                .init(color: effectiveBloomColor.opacity(bloomAlpha), location: 0),
-                                .init(color: effectiveBloomColor.opacity(bloomAlpha * 0.50), location: 0.35),
-                                .init(color: effectiveBloomColor.opacity(bloomAlpha * 0.15), location: 0.65),
-                                .init(color: .clear, location: 0.82)
+                                .init(color: effectiveBloomColor.opacity(0.34 + idleBreath + surge * 0.20), location: 0),
+                                .init(color: effectiveBloomColor.opacity(0.12), location: 0.40),
+                                .init(color: .clear, location: 0.78)
                             ]),
-                            center: UnitPoint(x: 0.50, y: 1.20),
+                            center: UnitPoint(x: 0.50, y: 1.26),
                             startRadius: 0,
-                            endRadius: bloomRadius
+                            endRadius: 260 + CGFloat(ease) * 40
                         )
                     )
                     .blendMode(.plusLighter)
 
-                // 3. Secondary Warmth Counterbalance (Lớp màu phụ hòa quyện ở mép đáy tạo chiều sâu)
+                // 3. Left Wave Crest (Mỏm sóng bên trái dâng cao ôm trọn và tỏa sáng dưới Mochi)
                 RoundedRectangle(cornerRadius: cardRadius, style: .continuous)
                     .fill(
                         RadialGradient(
                             gradient: Gradient(stops: [
-                                .init(color: secondaryGlowColor.opacity(bloomAlpha * 0.30), location: 0),
-                                .init(color: secondaryGlowColor.opacity(bloomAlpha * 0.10), location: 0.40),
-                                .init(color: .clear, location: 0.75)
+                                .init(color: effectiveBloomColor.opacity(0.52 + leftBreath + surge * 0.22), location: 0),
+                                .init(color: effectiveBloomColor.opacity(0.24 + surge * 0.10), location: 0.42),
+                                .init(color: effectiveBloomColor.opacity(0.06), location: 0.72),
+                                .init(color: .clear, location: 0.95)
                             ]),
-                            center: UnitPoint(x: 0.50, y: 1.24),
+                            center: UnitPoint(x: 0.16, y: 0.60),
                             startRadius: 0,
-                            endRadius: bloomRadius * 0.85
+                            endRadius: 185 + surgeSpread
                         )
                     )
                     .blendMode(.plusLighter)
 
-                // 4. Character Backlight Halo (Vầng hào quang hình cầu mềm mại sau lưng Mochi)
+                // 4. Right Wave Crest (Mỏm sóng bên phải dâng cao ôm góc phải bằng màu phụ đối trọng)
+                RoundedRectangle(cornerRadius: cardRadius, style: .continuous)
+                    .fill(
+                        RadialGradient(
+                            gradient: Gradient(stops: [
+                                .init(color: secondaryGlowColor.opacity(0.46 + rightBreath + surge * 0.20), location: 0),
+                                .init(color: secondaryGlowColor.opacity(0.22 + surge * 0.08), location: 0.42),
+                                .init(color: secondaryGlowColor.opacity(0.05), location: 0.72),
+                                .init(color: .clear, location: 0.95)
+                            ]),
+                            center: UnitPoint(x: 0.88, y: 0.64),
+                            startRadius: 0,
+                            endRadius: 175 + surgeSpread
+                        )
+                    )
+                    .blendMode(.plusLighter)
+
+                // 5. Character Backlight Halo (Vầng hào quang phát sáng hình cầu trực tiếp sau đầu Mochi)
                 GeometryReader { geo in
                     let haloX = geo.size.width > 220 ? 62.0 : geo.size.width * 0.22
-                    let haloY = geo.size.height * 0.52
-                    let haloBreath = sin(time * 1.4) * 0.04
-                    let haloSize: CGFloat = 124.0 * (1.0 + CGFloat(haloBreath))
-                    let haloOpacity = 0.52 + surge * 0.15 + haloBreath
+                    let haloY = geo.size.height * 0.50
+                    let haloBreath = sin(time * 1.5) * 0.04
+                    let haloSize: CGFloat = 120.0 * (1.0 + CGFloat(haloBreath))
+                    let haloOpacity = 0.60 + surge * 0.18 + haloBreath
 
                     Circle()
                         .fill(
                             RadialGradient(
                                 gradient: Gradient(stops: [
-                                    .init(color: effectiveBloomColor.opacity(haloOpacity), location: 0),
-                                    .init(color: effectiveBloomColor.opacity(haloOpacity * 0.35), location: 0.40),
-                                    .init(color: .clear, location: 0.82)
+                                    .init(color: Color.white.opacity(0.32), location: 0),
+                                    .init(color: effectiveBloomColor.opacity(haloOpacity), location: 0.35),
+                                    .init(color: effectiveBloomColor.opacity(haloOpacity * 0.30), location: 0.68),
+                                    .init(color: .clear, location: 0.90)
                                 ]),
                                 center: .center,
-                                startRadius: 4,
+                                startRadius: 2,
                                 endRadius: haloSize / 2
                             )
                         )
                         .frame(width: haloSize, height: haloSize)
                         .position(x: haloX, y: haloY)
-                        .blur(radius: 18)
+                        .blur(radius: 16)
                         .blendMode(.plusLighter)
                 }
                 .clipShape(RoundedRectangle(cornerRadius: cardRadius, style: .continuous))
 
-                // 5. Top Specular Glass Sheen (Lớp phản xạ mép kính trên tinh tế)
+                // 6. Top Specular Glass Sheen (Lớp phản xạ mép kính trên tinh tế)
                 RoundedRectangle(cornerRadius: cardRadius, style: .continuous)
                     .fill(
                         LinearGradient(
@@ -4615,7 +4634,7 @@ struct CardBackgroundLayer: View {
                         )
                     )
 
-                // 6. Specular Rim Stroke (Viền bo góc kính thanh thoát như gốc)
+                // 7. Specular Rim Stroke (Viền bo góc kính thanh thoát như gốc)
                 RoundedRectangle(cornerRadius: cardRadius, style: .continuous)
                     .stroke(
                         LinearGradient(
