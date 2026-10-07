@@ -985,20 +985,25 @@ struct IslandContentView: View {
                 .opacity(state.view == .confused ? 0 : 1)
                 .animation(.easeInOut(duration: 0.2), value: state.view == .confused)
 
-            ZStack {
-                let isTall = state.view == .prompt || state.view == .history || state.view == .mail
+            let headerGap: CGFloat = (state.view == .settings) ? 10 : 0
+            if headerGap > 0 {
+                Spacer().frame(height: headerGap)
+            }
+
+            ZStack(alignment: .top) {
+                let isTall = state.view == .prompt || state.view == .history || state.view == .mail || state.view == .settings
                 IslandViewContent(view: state.view, state: state)
                     .frame(maxWidth: .infinity)
                     .frame(height: isTall ? nil : 98)
                     .id(state.view)
                     .transition(.opacity.combined(with: .scale(scale: 0.98)))
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .padding(.horizontal, 10)
             .animation(.spring(response: 0.34, dampingFraction: 0.82), value: state.view)
         }
         .padding(.top, 8)
-        .padding(.bottom, 10)
+        .padding(.bottom, state.view == .settings ? 12 : 10)
         .foregroundColor(Color(hex: "#F5F6F8"))
     }
 }

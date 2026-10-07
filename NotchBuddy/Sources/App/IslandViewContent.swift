@@ -26,6 +26,8 @@ struct IslandViewContent: View {
         case .settings:  SettingsIslandView(state: state)
         case .history:   SessionHistoryView(state: state)
         case .greeting:  EmptyView()  // GreetingCanvasView overlaid in IslandRootView
+        case .wardrobe:  WardrobeView(state: state)
+        case .recap:     WeeklyRecapCardView(state: state)
         }
     }
 }
@@ -160,7 +162,8 @@ struct OverviewView: View {
                 NSWorkspace.shared.openApplication(at: url, configuration: .init(), completionHandler: nil)
             }
             #endif
-        case "agent_gemini", "agent_antigravity":
+        case "agent_gemini", "agent_antigravity",
+             "agent_copilot", "agent_muse", "agent_opencode", "agent_amp":
             #if !APPSTORE
             let terminalBundleIds = ["com.apple.Terminal", "com.googlecode.iterm2",
                                      "net.kovidgoyal.kitty", "com.mitchellh.ghostty"]
@@ -176,6 +179,14 @@ struct OverviewView: View {
             switchChatProvider(.google)
         case "ai_openai":
             switchChatProvider(.openai)
+        case "ai_ollama":
+            switchChatProvider(.ollama)
+        case "ai_lmstudio":
+            switchChatProvider(.lmstudio)
+        case "integration_music":
+            #if !APPSTORE
+            MusicController.shared.openMusic()
+            #endif
         default:
             // Non-integration real tasks
             if task.source == .n8n {
@@ -1407,6 +1418,8 @@ struct ModelPickerView: View {
                             case .anthropic: state.claudeModel = model.id
                             case .google:    state.googleChatModel = model.id
                             case .openai:    state.openAIChatModel = model.id
+                            case .ollama:    state.ollamaChatModel = model.id
+                            case .lmstudio:  state.lmstudioChatModel = model.id
                             }
                             isPresented = false
                             SoundEngine.shared.play("blip")
@@ -2439,11 +2452,43 @@ struct IntegrationCardView: View {
             #else
             return false
             #endif
+        case "agent_copilot":
+            #if !APPSTORE
+            return HookServer.copilotHooksInstalled()
+            #else
+            return false
+            #endif
+        case "agent_muse":
+            #if !APPSTORE
+            return HookServer.museHooksInstalled()
+            #else
+            return false
+            #endif
+        case "agent_opencode":
+            #if !APPSTORE
+            return HookServer.openCodePluginInstalled()
+            #else
+            return false
+            #endif
+        case "agent_amp":
+            #if !APPSTORE
+            return HookServer.ampPluginInstalled()
+            #else
+            return false
+            #endif
         case "agent_cursor", "agent_codex":
             return false  // coming soon
         case "ai_anthropic":  return KeychainStore.shared.get("anthropic-api-key") != nil
         case "ai_google":     return KeychainStore.shared.get("google-api-key")    != nil
         case "ai_openai":     return KeychainStore.shared.get("openai-api-key")    != nil
+        case "ai_ollama":     return !AppState.shared.ollamaServerURL.isEmpty
+        case "ai_lmstudio":   return !AppState.shared.lmstudioServerURL.isEmpty
+        case "integration_music":
+            #if !APPSTORE
+            return !appState.musicAutomationDenied
+            #else
+            return false
+            #endif
         case "integration_resend":  return KeychainStore.shared.get("resend-api-key") != nil
         case "integration_n8n":     return KeychainStore.shared.get("n8n-api-key")    != nil
         case "integration_vercel":  return KeychainStore.shared.get("vercel-token")   != nil
@@ -2514,7 +2559,24 @@ struct IntegrationCardView: View {
         task.id == "integration_notion" && appState.notionLoaded
     }
 
+    // Apple Music: show card when a track is loaded (playing or paused) or automation is denied
+    private var musicIsActive: Bool {
+        #if !APPSTORE
+        guard task.id == "integration_music" else { return false }
+        if appState.musicAutomationDenied { return true }
+        return MusicController.shared.trackTitle != nil
+        #else
+        return false
+        #endif
+    }
+
     private var statusDot: Color {
+        #if !APPSTORE
+        if task.id == "integration_music" {
+            if appState.musicAutomationDenied { return Color(hex: "#F4505E") }
+            return appState.musicPlaying ? Color(hex: "#FA2D48") : Color(hex: "#22C55E")
+        }
+        #endif
         if PillCatalog.definition(for: task.id)?.comingSoon == true { return Color(hex: "#6B7079") }
         let svcErr = task.id == "integration_stripe" ? appState.stripeError
                    : task.id == "integration_calcom"  ? appState.calcomError
@@ -2524,25 +2586,39 @@ struct IntegrationCardView: View {
     }
 
     private var statusLabel: String {
-        if PillCatalog.definition(for: task.id)?.comingSoon == true { return "Coming soon" }
+        #if !APPSTORE
+        if task.id == "integration_music" {
+            if appState.musicAutomationDenied { return String(localized: "Automation not allowed") }
+            if appState.musicPlaying { return String(format: String(localized: "Playing · %@"), MusicController.shared.trackTitle ?? String(localized: "Unknown")) }
+            return String(localized: "Not playing")
+        }
+        #endif
+        if PillCatalog.definition(for: task.id)?.comingSoon == true { return String(localized: "Coming soon") }
         let svcErr = task.id == "integration_stripe" ? appState.stripeError
                    : task.id == "integration_calcom"  ? appState.calcomError
                    : nil
         if let err = svcErr { return err }
         let isHooks = task.id == "agent_gemini" || task.id == "agent_antigravity"
-        let isAI    = task.id == "ai_anthropic" || task.id == "ai_google" || task.id == "ai_openai"
+                   || task.id == "agent_copilot" || task.id == "agent_muse"
+                   || task.id == "agent_opencode" || task.id == "agent_amp"
+        let isAI    = ChatProvider(pillID: task.id) != nil
         if isConfigured {
-            if isHooks { return "Hooks installed" }
+            if isHooks { return String(localized: "Hooks installed") }
             if isAI {
+                let provider = ChatProvider(pillID: task.id)!
+                if provider.isLocal {
+                    let model = provider == .ollama ? appState.ollamaChatModel : appState.lmstudioChatModel
+                    return String(localized: "Connected · \(model)")
+                }
                 let model = task.id == "ai_anthropic" ? appState.claudeModel
                           : task.id == "ai_google"    ? appState.googleChatModel
                           :                             appState.openAIChatModel
-                return "Key configured · \(model)"
+                return String(localized: "Key configured · \(model)")
             }
-            return "Connected · loading…"
+            return String(localized: "Connected · loading…")
         } else {
-            if isHooks { return "Hooks not installed" }
-            return "Key not configured"
+            if isHooks { return String(localized: "Hooks not installed") }
+            return String(localized: "Key not configured")
         }
     }
 
@@ -2577,6 +2653,11 @@ struct IntegrationCardView: View {
         } else if notionHasData {
             NotionCardView()
                 .transition(.opacity)
+        } else if musicIsActive {
+            #if !APPSTORE
+            MusicCardView()
+                .transition(.opacity)
+            #endif
         } else if agentSessionActive {
             // Active session view — reuse overview layout
             VStack(alignment: .leading, spacing: 0) {
@@ -2673,10 +2754,8 @@ struct IntegrationCardView: View {
                             .buttonStyle(.plain)
                         }
                         #endif
-                    } else if task.id == "ai_anthropic" || task.id == "ai_google" || task.id == "ai_openai" {
+                    } else if let provider = ChatProvider(pillID: task.id) {
                         if isConfigured {
-                            let provider: ChatProvider = task.id == "ai_anthropic" ? .anthropic
-                                                       : task.id == "ai_google"    ? .google : .openai
                             Button("Chat with \(task.name)") {
                                 switchChatProvider(provider)
                             }
@@ -3793,12 +3872,30 @@ struct AgentPillsView: View {
             Spacer(minLength: 0)
             LazyVGrid(columns: columns, spacing: 4) {
                 ForEach(displayTasks) { task in
+                    #if !APPSTORE
+                    if task.id == "integration_music" {
+                        MusicPill(task: task, state: state, swapping: $swapping) {
+                            swapping = true
+                            state.setFocus(task.id)
+                            SoundEngine.shared.play("blip")
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { swapping = false }
+                        }
+                    } else {
+                        AgentPill(task: task, state: state, swapping: $swapping) {
+                            swapping = true
+                            state.setFocus(task.id)
+                            SoundEngine.shared.play("blip")
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { swapping = false }
+                        }
+                    }
+                    #else
                     AgentPill(task: task, state: state, swapping: $swapping) {
                         swapping = true
                         state.setFocus(task.id)
                         SoundEngine.shared.play("blip")
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { swapping = false }
                     }
+                    #endif
                 }
             }
             .padding(.horizontal, 8)
@@ -3867,6 +3964,207 @@ struct AgentPill: View {
     }
 }
 
+// MARK: - Music Pill (GitHub build only)
+
+#if !APPSTORE
+struct MusicPill: View {
+    let task: AgentTask
+    @ObservedObject var state: AppState
+    @Binding var swapping: Bool
+    let onTap: () -> Void
+    @State private var isHovered = false
+
+    private var isPlaying: Bool { AppState.shared.musicPlaying }
+    private var showControls: Bool { isHovered && MusicController.shared.trackTitle != nil }
+
+    var body: some View {
+        ZStack {
+            // Selection target — full pill area, receives taps where controls don't
+            Capsule()
+                .fill(Color.clear)
+                .contentShape(Capsule())
+                .onTapGesture { onTap() }
+
+            // Visual fills
+            Capsule()
+                .fill(isHovered ? Color(hex: task.color).opacity(0.18) : Color(hex: "#0E0F11"))
+                .allowsHitTesting(false)
+            Capsule()
+                .stroke(Color(hex: task.color).opacity(isHovered ? 0.55 : 0.14), lineWidth: 1)
+                .allowsHitTesting(false)
+
+            // Mini Mochi at leading edge
+            HStack(spacing: 0) {
+                MiniBotCanvasView(task: task, isDancing: isPlaying)
+                    .frame(width: 22 / 0.6, height: 22 / 0.6)
+                    .frame(width: 22, height: 22, alignment: .center)
+                    .padding(.leading, 8)
+                Spacer()
+            }
+            .allowsHitTesting(false)
+
+            // Title — trailing padding grows on hover to make room for buttons
+            Text(task.name)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundColor(isHovered ? Color(hex: task.color).lighter(by: 0.3) : Color(hex: "#6B7079"))
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .padding(.leading, 34)
+                .padding(.trailing, showControls ? 52 : 10)
+                .frame(maxWidth: .infinity, alignment: .center)
+                .animation(.spring(response: 0.2, dampingFraction: 0.7), value: showControls)
+                .allowsHitTesting(false)
+
+            // Playback controls — appear on hover when a track is loaded
+            if showControls {
+                HStack(spacing: 0) {
+                    Spacer()
+                    HStack(spacing: 2) {
+                        MusicControlButton(icon: isPlaying ? "pause.fill" : "play.fill", color: task.color) {
+                            MusicController.shared.playPause()
+                        }
+                        MusicControlButton(icon: "forward.fill", color: task.color) {
+                            MusicController.shared.nextTrack()
+                        }
+                    }
+                    .padding(.trailing, 4)
+                }
+                .transition(.opacity.combined(with: .scale(scale: 0.85, anchor: .trailing)))
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: 28)
+        .shadow(color: Color(hex: task.color).opacity(isHovered ? 0.35 : 0), radius: 10, x: 0, y: 2)
+        .scaleEffect(isHovered ? 1.04 : 1.0)
+        .brightness(isHovered ? 0.06 : 0)
+        .onHover { newHover in
+            guard !swapping else { return }
+            withAnimation(.spring(response: 0.2, dampingFraction: 0.7)) { isHovered = newHover }
+        }
+    }
+}
+
+struct MusicControlButton: View {
+    let icon: String
+    let color: String
+    let action: () -> Void
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            ZStack {
+                Circle()
+                    .fill(isHovered ? Color(hex: color).opacity(0.18) : Color(hex: "#0E0F11"))
+                Circle()
+                    .stroke(Color(hex: color).opacity(isHovered ? 0.55 : 0.14), lineWidth: 1)
+                Image(systemName: icon)
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundColor(isHovered ? Color(hex: color).lighter(by: 0.3) : Color(hex: "#6B7079"))
+            }
+            .frame(width: 20, height: 20)
+            .shadow(color: Color(hex: color).opacity(isHovered ? 0.35 : 0), radius: 6)
+        }
+        .buttonStyle(.plain)
+        .scaleEffect(isHovered ? 1.1 : 1.0)
+        .onHover { newHover in
+            withAnimation(.spring(response: 0.2, dampingFraction: 0.7)) { isHovered = newHover }
+        }
+    }
+}
+
+// MARK: - Music Card View (GitHub build only)
+
+struct MusicCardView: View {
+    @ObservedObject private var controller = MusicController.shared
+    @ObservedObject private var appState = AppState.shared
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if appState.musicAutomationDenied {
+                // Automation denied — prompt user to fix
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(Color(hex: "#F4505E"))
+                        .frame(width: 7, height: 7)
+                    Text("Apple Music")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(Color(hex: "#F5F6F8"))
+                    Spacer(minLength: 2)
+                }
+                .padding(.top, 6)
+                .padding(.leading, 108)
+                .padding(.trailing, 36)
+
+                Text("Allow Coucou to control Music")
+                    .font(.system(size: 11))
+                    .foregroundColor(Color(hex: "#8E939C"))
+                    .padding(.leading, 108)
+                    .padding(.trailing, 12)
+
+                Button("Open Settings…") { MusicController.shared.openAutomationSettings() }
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(Color(hex: "#FA2D48").opacity(0.85))
+                    .buttonStyle(.plain)
+                    .padding(.leading, 108)
+                    .padding(.top, 2)
+            } else {
+                // Line 1: dot + title
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(Color(hex: "#FA2D48"))
+                        .frame(width: 7, height: 7)
+                    if let title = controller.trackTitle {
+                        Text(title)
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(Color(hex: "#F5F6F8"))
+                            .lineLimit(1).truncationMode(.tail)
+                            .frame(maxWidth: 150, alignment: .leading)
+                    }
+                }
+                .padding(.top, 6)
+                .padding(.leading, 108)
+
+                // Line 2: artist
+                if let artist = controller.artist {
+                    Text(artist)
+                        .font(.system(size: 11))
+                        .foregroundColor(Color(hex: "#8E939C"))
+                        .lineLimit(1).truncationMode(.tail)
+                        .frame(maxWidth: 150, alignment: .leading)
+                        .padding(.leading, 108)
+                }
+
+                // Line 3: controls
+                HStack(spacing: 8) {
+                    Button(action: { MusicController.shared.previousTrack() }) {
+                        Image(systemName: "backward.fill")
+                            .font(.system(size: 11))
+                            .foregroundColor(Color(hex: "#8E939C"))
+                    }
+                    .buttonStyle(.plain)
+                    Button(action: { MusicController.shared.playPause() }) {
+                        Image(systemName: appState.musicPlaying ? "pause.fill" : "play.fill")
+                            .font(.system(size: 11))
+                            .foregroundColor(Color(hex: "#FA2D48"))
+                    }
+                    .buttonStyle(.plain)
+                    Button(action: { MusicController.shared.nextTrack() }) {
+                        Image(systemName: "forward.fill")
+                            .font(.system(size: 11))
+                            .foregroundColor(Color(hex: "#8E939C"))
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.leading, 108)
+                .padding(.top, 6)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .padding(.top, 4)
+    }
+}
+#endif
+
 struct PillBadgeView: View {
     let badge: PillBadge
     let taskColor: String
@@ -3922,6 +4220,279 @@ struct ColumnAgentsView: View {
                     .animation(.spring(response: 0.5, dampingFraction: 0.72).delay(Double(idx) * 0.035), value: idx)
             }
         }
+    }
+}
+
+// MARK: - Wardrobe
+
+struct WardrobeView: View {
+    @ObservedObject var state: AppState
+    @State private var hoveredOutfit: Outfit? = nil
+
+    private let columns = Array(repeating: GridItem(.fixed(30), spacing: 5), count: 14)
+
+    private var headerRight: String {
+        // Hover takes priority: show hovered outfit name
+        if let h = hoveredOutfit {
+            if h == .auto {
+                let seasonal = Outfit.seasonal(for: Date(), calendar: .current)
+                let name = seasonal == .none ? "None" : seasonal.displayName
+                return "Auto · follows the seasons (now: \(name))"
+            }
+            return h.displayName
+        }
+        // Fall back to current selection
+        let sel = state.mochiOutfitSelection
+        if sel == .auto {
+            let seasonal = Outfit.seasonal(for: Date(), calendar: .current)
+            let name = seasonal == .none ? "None" : seasonal.displayName
+            return "Auto · \(name)"
+        }
+        return sel.displayName
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Header
+            HStack(spacing: 6) {
+                Text("Wardrobe")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(Color(hex: "#F5F6F8"))
+                Spacer(minLength: 4)
+                Text(headerRight)
+                    .font(.system(size: 11))
+                    .foregroundColor(Color(hex: "#8E939C"))
+                    .lineLimit(1)
+            }
+            .padding(.top, 6)
+            .padding(.horizontal, 10)
+
+            // Grid
+            let allOutfits = Outfit.allCases.filter { $0 != .auto }
+            let withAuto = [Outfit.auto] + allOutfits
+            ScrollView(.vertical, showsIndicators: false) {
+                LazyVGrid(columns: columns, spacing: 5) {
+                    ForEach(withAuto, id: \.rawValue) { outfit in
+                        OutfitPillView(
+                            outfit: outfit,
+                            isSelected: state.mochiOutfitSelection == outfit,
+                            isHovered: hoveredOutfit == outfit,
+                            onHover: { h in
+                                hoveredOutfit = h ? outfit : nil
+                                if h {
+                                    // Preview on main Mochi
+                                    let preview: Outfit = outfit == .auto
+                                        ? Outfit.seasonal(for: Date(), calendar: .current)
+                                        : outfit
+                                    state.wardrobePreviewOutfit = preview
+                                } else if hoveredOutfit == nil {
+                                    state.wardrobePreviewOutfit = nil
+                                }
+                            },
+                            onTap: {
+                                guard state.mochiOutfitSelection != outfit else { return }
+                                state.mochiOutfitSelection = outfit
+                                SoundEngine.shared.play("pop")
+                                NotificationCenter.default.post(name: .triggerEmote, object: BotEmote.proud)
+                            },
+                            seasonalOutfit: outfit == .auto ? state.resolvedOutfit : .none
+                        )
+                    }
+                }
+                .padding(.vertical, 6)
+                .padding(.horizontal, 8)
+            }
+            .frame(maxHeight: .infinity)
+            .mask(
+                LinearGradient(
+                    stops: [
+                        .init(color: .white, location: 0),
+                        .init(color: .white, location: 0.85),
+                        .init(color: .clear, location: 1)
+                    ],
+                    startPoint: .top, endPoint: .bottom
+                )
+            )
+        }
+        .padding(.leading, 108)
+        .padding(.trailing, 12)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .onDisappear {
+            state.wardrobePreviewOutfit = nil
+            hoveredOutfit = nil
+        }
+        .onExitCommand {
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                state.view = .overview
+            }
+        }
+    }
+}
+
+struct OutfitPillView: View {
+    let outfit: Outfit
+    let isSelected: Bool
+    let isHovered: Bool
+    let onHover: (Bool) -> Void
+    let onTap: () -> Void
+    var seasonalOutfit: Outfit = .none
+
+    var body: some View {
+        Canvas { context, size in
+            drawOutfitIcon(context: context, size: size, outfit: outfit, seasonal: seasonalOutfit)
+        }
+        .frame(width: 30, height: 30)
+        .background(
+            RoundedRectangle(cornerRadius: 7)
+                .fill(isHovered ? Color.white.opacity(0.10) : Color.white.opacity(0.06))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 7)
+                .stroke(isSelected ? Color.white.opacity(0.40) : Color.white.opacity(0.08), lineWidth: 1)
+        )
+        .onHover { onHover($0) }
+        .onTapGesture { onTap() }
+    }
+}
+
+private func drawOutfitIcon(context: GraphicsContext, size: CGSize, outfit: Outfit, seasonal: Outfit = .none) {
+    let W = size.width, H = size.height
+    let cx = W / 2, cy = H / 2
+    let R: CGFloat = 6.5   // small scale for icon
+
+    switch outfit {
+    case .auto:
+        let iconR: CGFloat = 10.0
+        let rx = iconR * 1.14, ry = iconR * 0.88
+        let mH = MochiH(R: iconR, yaw: 0, pitch: 0)
+        let bodyPath = mochiOutfitPath(rx, ry)
+        let iconCY = cy + iconR * 0.62
+
+        // Draw the seasonal outfit behind body
+        if seasonal != .none && seasonal != .auto {
+            drawOutfitBehindStatic(context: context, outfit: seasonal, H: mH,
+                                   cx: cx, cy: iconCY, tilt: 0, sx: 1, sy: 1,
+                                   roll: 0, morph: 0, isMini: false)
+        }
+        // Body
+        var ctx = context
+        ctx.translateBy(x: cx, y: iconCY)
+        ctx.fill(bodyPath, with: .linearGradient(
+            Gradient(colors: [Color(red: 0.929, green: 0.929, blue: 0.937),
+                              Color(red: 0.769, green: 0.773, blue: 0.792)]),
+            startPoint: CGPoint(x: rx*0.7, y: -ry*0.85),
+            endPoint:   CGPoint(x: -rx*0.8, y: ry*0.9)
+        ))
+        ctx.fill(bodyPath, with: .radialGradient(
+            Gradient(stops: [.init(color: .clear, location: 0.6),
+                             .init(color: Color.black.opacity(0.2), location: 1)]),
+            center: .zero, startRadius: iconR*0.15, endRadius: iconR*1.25
+        ))
+        // Eyes
+        var eyeCtx = ctx; eyeCtx.clip(to: bodyPath)
+        let ink = Color(red: 0.102, green: 0.082, blue: 0.071)
+        for f in mEyeFrames(mH) {
+            guard f.visible else { continue }
+            var ec = eyeCtx; ec.translateBy(x: f.x, y: f.y); ec.scaleBy(x: f.fx, y: f.fy)
+            let hh = max(f.h, f.w*0.3)
+            var pill = Path()
+            pill.addRoundedRect(in: CGRect(x: -f.w/2, y: -hh/2, width: f.w, height: hh),
+                                cornerSize: CGSize(width: min(f.w/2,hh/2), height: min(f.w/2,hh/2)))
+            ec.fill(pill, with: .color(ink))
+        }
+        // Front outfit
+        if seasonal != .none && seasonal != .auto {
+            drawOutfitFrontStatic(context: context, outfit: seasonal, H: mH,
+                                  cx: cx, cy: iconCY, tilt: 0, sx: 1, sy: 1,
+                                  roll: 0, morph: 0, isMini: false)
+        }
+        // AUTO badge at bottom
+        var badgeCtx = context
+        let badgeCY = iconCY + ry * 0.72
+        badgeCtx.translateBy(x: cx, y: badgeCY)
+        let bw: CGFloat = 14, bh: CGFloat = 6.5
+        var badge = Path()
+        badge.addRoundedRect(in: CGRect(x: -bw/2, y: -bh/2, width: bw, height: bh),
+                             cornerSize: CGSize(width: bh/2, height: bh/2))
+        badgeCtx.fill(badge, with: .color(Color.black.opacity(0.60)))
+        badgeCtx.draw(Text("AUTO").font(.system(size: 4.2, weight: .semibold)).foregroundColor(.white),
+                      at: .zero)
+
+    case .none:
+        var ctx = context
+        ctx.translateBy(x: cx, y: cy)
+        // Circle with diagonal slash (⊘)
+        var circle = Path()
+        circle.addEllipse(in: CGRect(x: -R * 0.82, y: -R * 0.82, width: R * 1.64, height: R * 1.64))
+        ctx.stroke(circle, with: .color(Color(hex: "#454850")), style: StrokeStyle(lineWidth: 1.4, lineCap: .round))
+        var slash = Path()
+        slash.move(to:    CGPoint(x: -R * 0.56, y:  R * 0.56))
+        slash.addLine(to: CGPoint(x:  R * 0.56, y: -R * 0.56))
+        ctx.stroke(slash, with: .color(Color(hex: "#454850")), style: StrokeStyle(lineWidth: 1.4, lineCap: .round))
+
+    default:
+        // Small Mochi wearing the outfit
+        let iconR: CGFloat = 10.0
+        let rx = iconR * 1.14, ry = iconR * 0.88
+        let mH = MochiH(R: iconR, yaw: 0, pitch: 0)
+        let bodyPath = mochiOutfitPath(rx, ry)
+        let iconCY = cy + iconR * 0.62
+
+        // Draw outfit behind
+        drawOutfitBehindStatic(context: context, outfit: outfit, H: mH,
+                               cx: cx, cy: iconCY, tilt: 0, sx: 1, sy: 1,
+                               roll: 0, morph: 0, isMini: false)
+
+        // Draw body
+        var ctx = context
+        ctx.translateBy(x: cx, y: iconCY)
+        let pumpkin = outfit == .pumpkin
+        let top = pumpkin ? Color(hex: "#FFA94D") : Color(red: 0.929, green: 0.929, blue: 0.937)
+        let bot = pumpkin ? Color(hex: "#E8590C") : Color(red: 0.769, green: 0.773, blue: 0.792)
+        ctx.fill(bodyPath, with: .linearGradient(
+            Gradient(colors: [top, bot]),
+            startPoint: CGPoint(x: rx * 0.7, y: -ry * 0.85),
+            endPoint:   CGPoint(x: -rx * 0.8, y: ry * 0.9)
+        ))
+        ctx.fill(bodyPath, with: .radialGradient(
+            Gradient(stops: [
+                .init(color: .clear, location: 0),
+                .init(color: .clear, location: 0.6),
+                .init(color: Color.black.opacity(0.2), location: 1)
+            ]),
+            center: .zero, startRadius: iconR * 0.15, endRadius: iconR * 1.25
+        ))
+        ctx.fill(bodyPath, with: .radialGradient(
+            Gradient(stops: [
+                .init(color: Color.white.opacity(0.55), location: 0),
+                .init(color: .clear, location: 1)
+            ]),
+            center: CGPoint(x: rx * 0.34, y: -ry * 0.46),
+            startRadius: 0, endRadius: iconR * 0.42
+        ))
+
+        // Draw eyes
+        var eyeCtx = ctx
+        eyeCtx.clip(to: bodyPath)
+        let ink = Color(red: 0.102, green: 0.082, blue: 0.071)
+        for f in mEyeFrames(mH) {
+            guard f.visible else { continue }
+            var ec = eyeCtx
+            ec.translateBy(x: f.x, y: f.y)
+            ec.scaleBy(x: f.fx, y: f.fy)
+            let hh = max(f.h, f.w * 0.3)
+            var pill = Path()
+            pill.addRoundedRect(
+                in: CGRect(x: -f.w / 2, y: -hh / 2, width: f.w, height: hh),
+                cornerSize: CGSize(width: min(f.w / 2, hh / 2), height: min(f.w / 2, hh / 2))
+            )
+            ec.fill(pill, with: .color(ink))
+        }
+
+        // Draw outfit front
+        drawOutfitFrontStatic(context: context, outfit: outfit, H: mH,
+                              cx: cx, cy: iconCY, tilt: 0, sx: 1, sy: 1,
+                              roll: 0, morph: 0, isMini: false)
     }
 }
 
@@ -4448,17 +5019,24 @@ struct ShimmerOverlay: View {
 
 struct PrimaryButton: View {
     let title: String
+    let verbatim: Bool
     let kbd: String?
     let action: () -> Void
 
     init(_ title: String, kbd: String? = nil, action: @escaping () -> Void) {
-        self.title = title; self.kbd = kbd; self.action = action
+        self.title = title; self.verbatim = false; self.kbd = kbd; self.action = action
+    }
+
+    init(verbatim title: String, kbd: String? = nil, action: @escaping () -> Void) {
+        self.title = title; self.verbatim = true; self.kbd = kbd; self.action = action
     }
 
     var body: some View {
         Button(action: action) {
             HStack(spacing: 7) {
-                Text(title).font(.system(size: 12.5, weight: .medium))
+                Group {
+                    if verbatim { Text(verbatim: title) } else { Text(LocalizedStringKey(title)) }
+                }.font(.system(size: 12.5, weight: .medium))
                 if let k = kbd {
                     Text(k).font(.system(size: 10.5))
                         .padding(.horizontal, 4)
@@ -4477,17 +5055,24 @@ struct PrimaryButton: View {
 
 struct SecondaryButton: View {
     let title: String
+    let verbatim: Bool
     let kbd: String?
     let action: () -> Void
 
     init(_ title: String, kbd: String? = nil, action: @escaping () -> Void) {
-        self.title = title; self.kbd = kbd; self.action = action
+        self.title = title; self.verbatim = false; self.kbd = kbd; self.action = action
+    }
+
+    init(verbatim title: String, kbd: String? = nil, action: @escaping () -> Void) {
+        self.title = title; self.verbatim = true; self.kbd = kbd; self.action = action
     }
 
     var body: some View {
         Button(action: action) {
             HStack(spacing: 7) {
-                Text(title).font(.system(size: 12.5, weight: .medium))
+                Group {
+                    if verbatim { Text(verbatim: title) } else { Text(LocalizedStringKey(title)) }
+                }.font(.system(size: 12.5, weight: .medium))
                 if let k = kbd {
                     Text(k).font(.system(size: 10.5))
                         .padding(.horizontal, 4)
@@ -4550,7 +5135,7 @@ struct SettingsIslandView: View {
     var body: some View {
         ZStack(alignment: .leading) {
             CardBackground(wash: nil)
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 11) {
                 // Sound row
                 HStack(spacing: 10) {
                     Toggle("", isOn: $state.soundEnabled)
@@ -4670,7 +5255,7 @@ struct SettingsIslandView: View {
             }
             .padding(.leading, 84)
             .padding(.trailing, 16)
-            .padding(.vertical, 14)
+            .padding(.vertical, 16)
         }
     }
 }

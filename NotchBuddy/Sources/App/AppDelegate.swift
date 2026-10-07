@@ -114,5 +114,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // NotionPoller.shared.start()
         NotificationCenter.default.addObserver(self, selector: #selector(openSettings),
                                                name: .openFullSettings, object: nil)
+        NotificationCenter.default.addObserver(forName: .greetComplete, object: nil, queue: .main) { _ in
+            DesktopMochiController.shared.launchFlyIfNeeded()
+        }
+        #if !APPSTORE
+        _ = MusicController.shared
+        #endif
     }
 }

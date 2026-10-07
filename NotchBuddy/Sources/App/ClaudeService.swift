@@ -229,6 +229,7 @@ final class ClaudeService {
         case .anthropic: return 150_000   // 200k window, reserve 50k for output + system
         case .google:    return 800_000   // 1M window, reserve 200k
         case .openai:    return 96_000    // 128k window, reserve 32k
+        case .ollama, .lmstudio: return 32_000
         }
     }
 
@@ -615,16 +616,36 @@ final class ClaudeService {
     func chatOpenAICompatible(query: String, context: PromptContext?, state: AppState) async {
         let provider = state.chatProvider
         guard provider != .anthropic else { return }
-        guard let key = KeychainStore.shared.get(provider.keychainKey), !key.isEmpty else {
-            await showError("\(provider.displayName) API key missing. Configure it in Settings.", state: state)
-            return
-        }
 
+        let key: String
         let baseURL: String
-        switch provider {
-        case .google:  baseURL = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
-        case .openai:  baseURL = "https://api.openai.com/v1/chat/completions"
-        case .anthropic: return
+        if provider == .ollama {
+            let base = LocalChat.normaliseURL(state.ollamaServerURL)
+            guard !base.isEmpty else {
+                await showError("Connect Ollama in Settings → Chat first.", state: state)
+                return
+            }
+            baseURL = "\(base)/v1/chat/completions"
+            key = "ollama"
+        } else if provider == .lmstudio {
+            let base = LocalChat.normaliseURL(state.lmstudioServerURL)
+            guard !base.isEmpty else {
+                await showError("Connect LM Studio in Settings → Chat first.", state: state)
+                return
+            }
+            baseURL = "\(base)/v1/chat/completions"
+            key = "lmstudio"
+        } else {
+            guard let k = KeychainStore.shared.get(provider.keychainKey), !k.isEmpty else {
+                await showError("\(provider.displayName) API key missing. Configure it in Settings.", state: state)
+                return
+            }
+            key = k
+            switch provider {
+            case .google:  baseURL = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+            case .openai:  baseURL = "https://api.openai.com/v1/chat/completions"
+            case .anthropic, .ollama, .lmstudio: return
+            }
         }
         guard let url = URL(string: baseURL) else { return }
 
@@ -879,9 +900,11 @@ QUY TẮC BẮT BUỘC DÀNH CHO AGENT TỰ CHỦ:
                 "messages": msgs,
                 "tools": ComputerUseHarness.openAIToolDefinitions,
                 "stream": true,
-                "stream_options": ["include_usage": true],
                 "temperature": 0.2,
             ]
+            if !provider.isLocal {
+                body["stream_options"] = ["include_usage": true]
+            }
             if forceFinalAnswer {
                 body["tool_choice"] = "none"
             }
@@ -955,7 +978,7 @@ QUY TẮC BẮT BUỘC DÀNH CHO AGENT TỰ CHỦ:
                     // 2. Stream content tokens
                     if let textChunk = delta["content"] as? String, !textChunk.isEmpty {
                         accumulatedContent += textChunk
-                        let text = accumulatedContent
+                        let text = provider.isLocal ? LocalChat.progressiveFilter(accumulatedContent) : accumulatedContent
                         await MainActor.run {
                             if messageIndex < state.chatHistory.count {
                                 state.chatHistory[messageIndex].content = text
@@ -1176,7 +1199,8 @@ QUY TẮC BẮT BUỘC DÀNH CHO AGENT TỰ CHỦ:
                 }
 
                 // Final answer text completed
-                let trimmed = accumulatedContent.trimmingCharacters(in: .whitespacesAndNewlines)
+                let rawTrimmed = accumulatedContent.trimmingCharacters(in: .whitespacesAndNewlines)
+                let trimmed = provider.isLocal ? LocalChat.filterThinkingBlocks(rawTrimmed) : rawTrimmed
                 let asstMsg: [String: Any] = ["role": "assistant", "content": trimmed]
                 conversationMessages.append(asstMsg)
                 if totalTokensEstimated > 0 {
