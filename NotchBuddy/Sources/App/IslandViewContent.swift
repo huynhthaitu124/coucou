@@ -4498,6 +4498,183 @@ private func drawOutfitIcon(context: GraphicsContext, size: CGSize, outfit: Outf
 
 // MARK: - Card background
 
+// MARK: - Organic Wave Texture Layer (Fluid Caustic Ribbons)
+
+struct CardOrganicWaveLayer: View {
+    let color: Color
+
+    var body: some View {
+        Canvas { ctx, size in
+            let w = size.width
+            let h = size.height
+            guard w > 0, h > 0 else { return }
+
+            // 3 undulating fluid wave ribbons that create natural depth
+            for i in 0..<3 {
+                let fi = CGFloat(i)
+                var path = Path()
+                let baseAmp = h * (0.16 + fi * 0.05)
+                let yMid = h * (0.44 + fi * 0.13)
+                let freq = (0.010 - fi * 0.002)
+
+                path.move(to: CGPoint(x: 0, y: h))
+                path.addLine(to: CGPoint(x: 0, y: yMid + sin(fi * 1.5) * baseAmp))
+
+                var x: CGFloat = 0
+                while x <= w {
+                    let y = yMid + sin(x * freq + fi * 1.7) * baseAmp + cos(x * freq * 0.48) * (baseAmp * 0.42)
+                    path.addLine(to: CGPoint(x: x, y: y))
+                    x += 10
+                }
+                path.addLine(to: CGPoint(x: w, y: h))
+                path.closeSubpath()
+
+                ctx.fill(path, with: .linearGradient(
+                    Gradient(stops: [
+                        .init(color: color.opacity(0.12 - fi * 0.03), location: 0),
+                        .init(color: color.opacity(0.03), location: 0.45),
+                        .init(color: .clear, location: 1.0)
+                    ]),
+                    startPoint: CGPoint(x: w * 0.15, y: 0),
+                    endPoint: CGPoint(x: w * 0.85, y: h)
+                ))
+            }
+        }
+    }
+}
+
+// MARK: - Multi-Layer Optical Card Background
+
+struct CardBackgroundLayer: View {
+    let cardRadius: CGFloat
+    let effectiveBloomColor: Color
+    let secondaryGlowColor: Color
+
+    var body: some View {
+        ZStack {
+            // 1. Deep Obsidian Base Plate
+            RoundedRectangle(cornerRadius: cardRadius, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            Color(hex: "#121318"),
+                            Color(hex: "#0C0D11")
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+
+            // 2. Top-Left Ambient Ember / Radiant Corner Glow
+            RoundedRectangle(cornerRadius: cardRadius, style: .continuous)
+                .fill(
+                    RadialGradient(
+                        gradient: Gradient(stops: [
+                            .init(color: secondaryGlowColor.opacity(0.42), location: 0),
+                            .init(color: secondaryGlowColor.opacity(0.16), location: 0.38),
+                            .init(color: .clear, location: 0.80)
+                        ]),
+                        center: .topLeading,
+                        startRadius: 0,
+                        endRadius: 250
+                    )
+                )
+                .blendMode(.plusLighter)
+
+            // 3. Bottom-Right Ambient Color Counterbalance
+            RoundedRectangle(cornerRadius: cardRadius, style: .continuous)
+                .fill(
+                    RadialGradient(
+                        gradient: Gradient(stops: [
+                            .init(color: effectiveBloomColor.opacity(0.38), location: 0),
+                            .init(color: effectiveBloomColor.opacity(0.14), location: 0.42),
+                            .init(color: .clear, location: 0.82)
+                        ]),
+                        center: .bottomTrailing,
+                        startRadius: 0,
+                        endRadius: 290
+                    )
+                )
+                .blendMode(.plusLighter)
+
+            // 4. Bottom-Center Rising Ambient Glow
+            RoundedRectangle(cornerRadius: cardRadius, style: .continuous)
+                .fill(
+                    RadialGradient(
+                        gradient: Gradient(stops: [
+                            .init(color: effectiveBloomColor.opacity(0.46), location: 0),
+                            .init(color: effectiveBloomColor.opacity(0.20), location: 0.36),
+                            .init(color: .clear, location: 0.78)
+                        ]),
+                        center: UnitPoint(x: 0.5, y: 1.15),
+                        startRadius: 0,
+                        endRadius: 280
+                    )
+                )
+                .blendMode(.plusLighter)
+
+            // 5. Organic Wave Texture Layer (Fluid Caustics)
+            CardOrganicWaveLayer(color: effectiveBloomColor)
+                .clipShape(RoundedRectangle(cornerRadius: cardRadius, style: .continuous))
+                .blendMode(.screen)
+                .opacity(0.65)
+
+            // 6. Character Backlight Halo (Vầng hào quang hình cầu trực tiếp sau lưng Mochi)
+            GeometryReader { geo in
+                let haloX = geo.size.width > 220 ? 62.0 : geo.size.width * 0.22
+                let haloY = geo.size.height * 0.52
+                Circle()
+                    .fill(
+                        RadialGradient(
+                            gradient: Gradient(stops: [
+                                .init(color: effectiveBloomColor.opacity(0.62), location: 0),
+                                .init(color: effectiveBloomColor.opacity(0.24), location: 0.42),
+                                .init(color: .clear, location: 0.85)
+                            ]),
+                            center: .center,
+                            startRadius: 8,
+                            endRadius: 68
+                        )
+                    )
+                    .frame(width: 136, height: 136)
+                    .position(x: haloX, y: haloY)
+                    .blur(radius: 20)
+                    .blendMode(.plusLighter)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: cardRadius, style: .continuous))
+
+            // 7. Top Specular Glass Sheen
+            RoundedRectangle(cornerRadius: cardRadius, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        stops: [
+                            .init(color: Color.white.opacity(0.08), location: 0.0),
+                            .init(color: Color.white.opacity(0.02), location: 0.16),
+                            .init(color: .clear, location: 0.42)
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+
+            // 8. Specular Rim Bevel Stroke (Viền kính khúc xạ bắt sáng góc)
+            RoundedRectangle(cornerRadius: cardRadius, style: .continuous)
+                .stroke(
+                    LinearGradient(
+                        stops: [
+                            .init(color: Color.white.opacity(0.14), location: 0),
+                            .init(color: Color.white.opacity(0.04), location: 0.5),
+                            .init(color: Color.clear, location: 1)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 0.85
+                )
+        }
+    }
+}
+
 struct CardBackground<Content: View>: View {
     enum Wash { case red, green, pink, amber, cyan, indigo, soft }
 
@@ -4524,91 +4701,61 @@ struct CardBackground<Content: View>: View {
     }
 
     var effectiveBloomColor: Color {
-        // Tùy state mà đổi màu các effect, default giữ màu hiện tại của view
         switch state.effectiveState {
         case .error:
-            return Color(hex: "#EF4444").opacity(0.55) // Coral red bloom (Grokbot video Frame 25 & 30)
-        case .thinking:
-            return Color(hex: "#8B5CF6").opacity(0.44) // Violet bloom
-        case .working:
-            return Color(hex: "#0EA5E9").opacity(0.40) // Cyan working bloom
-        case .approval:
-            return Color(hex: "#F5A524").opacity(0.45) // Amber bloom
-        case .finished:
-            return Color(hex: "#10B981").opacity(0.45) // Mint green bloom
+            return Color(hex: "#C2532D") // Warm terracotta copper ember
         case .dizzy:
-            return Color(hex: "#EC4899").opacity(0.45)
+            return Color(hex: "#8A4565") // Dusty plum wine velvet
+        case .thinking:
+            return Color(hex: "#8B5CF6") // Mystic violet
+        case .working:
+            return Color(hex: "#0EA5E9") // Electric sky cyan
+        case .approval:
+            return Color(hex: "#F59E0B") // Amber gold
+        case .finished:
+            return Color(hex: "#10B981") // Mint emerald
         case .ratelimit:
-            return Color(hex: "#F97316").opacity(0.45)
+            return Color(hex: "#E05638") // Warm coral
         case .searching:
-            return Color(hex: "#6366F1").opacity(0.42)
+            return Color(hex: "#6366F1") // Indigo
         case .question:
-            return Color(hex: "#06B6D4").opacity(0.40)
+            return Color(hex: "#06B6D4") // Teal cyan
         default:
-            // Idle / Normal: giữ default màu wash hiện tại
-            return defaultWashColor
+            if wash != nil { return defaultWashColor }
+            return Color(hex: "#5C3A58").opacity(0.32) // Subtle dusty plum warmth
+        }
+    }
+
+    var secondaryGlowColor: Color {
+        switch state.effectiveState {
+        case .error:
+            return Color(hex: "#8B3A20") // Deep brick ember
+        case .dizzy:
+            return Color(hex: "#5C2840") // Dark mauve velvet
+        case .thinking:
+            return Color(hex: "#6366F1") // Indigo purple
+        case .working:
+            return Color(hex: "#2563EB") // Royal cobalt
+        case .approval:
+            return Color(hex: "#D97706") // Deep amber
+        case .finished:
+            return Color(hex: "#059669") // Forest teal
+        case .ratelimit:
+            return Color(hex: "#C2410C")
+        default:
+            return effectiveBloomColor.opacity(0.7)
         }
     }
 
     var body: some View {
         let cardRadius: CGFloat = state.coucouPosition == .notch ? 18 : 20
         return ZStack {
-            // Nền chính của card bên trong: giữ default là màu hiện tại
-            RoundedRectangle(cornerRadius: cardRadius, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [
-                            Color(hex: "#121318"),
-                            Color(hex: "#0C0D11")
-                        ],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                )
-
-            // Effect 1: Bottom Ambient Bloom (tùy state mà đổi màu, dâng từ mép đáy card bên trong)
-            RoundedRectangle(cornerRadius: cardRadius, style: .continuous)
-                .fill(
-                    RadialGradient(
-                        gradient: Gradient(stops: [
-                            .init(color: effectiveBloomColor, location: 0),
-                            .init(color: effectiveBloomColor.opacity(0.45), location: 0.35),
-                            .init(color: .clear, location: 0.78)
-                        ]),
-                        center: UnitPoint(x: 0.5, y: 1.15),
-                        startRadius: 0,
-                        endRadius: 280
-                    )
-                )
-                .animation(.easeInOut(duration: 0.38), value: state.effectiveState)
-
-            // Effect 2: Top Specular Glass Sheen (phản quang kính mờ trên mép trên card bên trong)
-            RoundedRectangle(cornerRadius: cardRadius, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        stops: [
-                            .init(color: Color.white.opacity(0.06), location: 0.0),
-                            .init(color: Color.white.opacity(0.015), location: 0.18),
-                            .init(color: .clear, location: 0.42)
-                        ],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                )
-
-            // Effect 3: Specular Rim Stroke viền bo góc tinh xảo
-            RoundedRectangle(cornerRadius: cardRadius, style: .continuous)
-                .stroke(
-                    LinearGradient(
-                        stops: [
-                            .init(color: Color.white.opacity(0.12), location: 0),
-                            .init(color: Color.white.opacity(0.04), location: 1)
-                        ],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    ),
-                    lineWidth: 0.85
-                )
+            CardBackgroundLayer(
+                cardRadius: cardRadius,
+                effectiveBloomColor: effectiveBloomColor,
+                secondaryGlowColor: secondaryGlowColor
+            )
+            .animation(.easeInOut(duration: 0.38), value: state.effectiveState)
 
             if let content = content {
                 content()
@@ -4625,45 +4772,12 @@ extension CardBackground where Content == EmptyView {
 
     var body: some View {
         let cardRadius: CGFloat = state.coucouPosition == .notch ? 18 : 20
-        return ZStack {
-            // Nền chính của card bên trong: giữ default là màu hiện tại
-            RoundedRectangle(cornerRadius: cardRadius)
-                .fill(Color(hex: "#141518"))
-
-            // Effect 1: Bottom Ambient Bloom theo state
-            RoundedRectangle(cornerRadius: cardRadius)
-                .fill(
-                    RadialGradient(
-                        gradient: Gradient(stops: [
-                            .init(color: effectiveBloomColor, location: 0),
-                            .init(color: effectiveBloomColor.opacity(0.45), location: 0.35),
-                            .init(color: .clear, location: 0.75)
-                        ]),
-                        center: UnitPoint(x: 0.5, y: 1.2),
-                        startRadius: 0,
-                        endRadius: 280
-                    )
-                )
-                .animation(.easeInOut(duration: 0.38), value: state.effectiveState)
-
-            // Effect 2: Top Specular Glass Sheen
-            RoundedRectangle(cornerRadius: cardRadius)
-                .fill(
-                    LinearGradient(
-                        stops: [
-                            .init(color: Color.white.opacity(0.05), location: 0.0),
-                            .init(color: Color.white.opacity(0.012), location: 0.18),
-                            .init(color: .clear, location: 0.40)
-                        ],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                )
-
-            // Effect 3: Viền bo góc
-            RoundedRectangle(cornerRadius: cardRadius)
-                .stroke(Color.white.opacity(0.04), lineWidth: 1)
-        }
+        return CardBackgroundLayer(
+            cardRadius: cardRadius,
+            effectiveBloomColor: effectiveBloomColor,
+            secondaryGlowColor: secondaryGlowColor
+        )
+        .animation(.easeInOut(duration: 0.38), value: state.effectiveState)
     }
 }
 

@@ -35,9 +35,6 @@ enum Outfit: String, CaseIterable {
         // Dec 1–26 → santa hat
         if month == 12 && day <= 26 { return .santaHat }
 
-        // Oct 1 – Nov 1 → witch hat
-        if month == 10 || (month == 11 && day == 1) { return .witchHat }
-
         // Easter −2 / +1 → bunny ears (Meeus/Jones/Butcher algorithm)
         let (eMonth, eDay) = easterDate(year: year)
         let eComps         = DateComponents(year: year, month: eMonth, day: eDay)
@@ -57,11 +54,11 @@ enum Outfit: String, CaseIterable {
         selection == .auto ? seasonal(for: date, calendar: calendar) : selection
     }
 
-    // UserDefaults key "mochiOutfit", default "auto", unknown value → .auto
+    // UserDefaults key "mochiOutfit", default "none", unknown value → .none
     static var stored: Outfit {
         get {
-            let raw = UserDefaults.standard.string(forKey: "mochiOutfit") ?? "auto"
-            return Outfit(rawValue: raw) ?? .auto
+            let raw = UserDefaults.standard.string(forKey: "mochiOutfit") ?? "none"
+            return Outfit(rawValue: raw) ?? .none
         }
         set {
             UserDefaults.standard.set(newValue.rawValue, forKey: "mochiOutfit")

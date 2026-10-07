@@ -40,7 +40,7 @@ final class AppState: ObservableObject {
     }
 
     // Mochi outfit selection — persisted
-    @Published var mochiOutfitSelection: Outfit = .auto {
+    @Published var mochiOutfitSelection: Outfit = Outfit.stored {
         didSet { Outfit.stored = mochiOutfitSelection }
     }
     // Transient: outfit preview while hovering in wardrobe (overrides resolvedOutfit in BotCanvasView)
@@ -632,6 +632,12 @@ final class AppState: ObservableObject {
         if let v = ud.string(forKey: "mainPill"), !v.isEmpty,
            PillCatalog.available.contains(where: { $0.id == v && $0.category == .workspace && !$0.comingSoon }) {
             mainPillId = v
+        }
+
+        // Reset seasonal / Halloween skin to original bare Mochi (.none)
+        if ud.string(forKey: "mochiOutfit") == "witchHat" || ud.string(forKey: "mochiOutfit") == "auto" {
+            ud.set("none", forKey: "mochiOutfit")
+            mochiOutfitSelection = .none
         }
 
         // Sync SoundEngine volume on launch
