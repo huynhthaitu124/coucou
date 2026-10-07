@@ -129,72 +129,73 @@ struct SettingsView: View {
     // MARK: - Body
 
     var body: some View {
-        HStack(spacing: 0) {
-            // Sidebar — 200 pt, sidebar visual effect background
-            ZStack(alignment: .topLeading) {
-                SidebarBackground()
-                VStack(alignment: .leading, spacing: 0) {
-                    // Header
-                    HStack(alignment: .center, spacing: 10) {
-                        Image(nsImage: NSApplication.shared.applicationIconImage)
-                            .resizable()
-                            .frame(width: 32, height: 32)
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text("Coucou")
-                                .font(.system(size: 13, weight: .semibold))
-                            Text(appVersion)
-                                .font(.system(size: 11))
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.top, 16)
-                    .padding(.bottom, 10)
-                    Divider()
-                    List(selection: Binding(
-                        get: { Optional(selectedSection) },
-                        set: { if let v = $0 { selectedSection = v; statusMessage = "" } }
-                    )) {
-                        SettingsSidebarRow(title: "General",      icon: "gearshape.fill",                    color: "#8E939C").tag("general")
-                        SettingsSidebarRow(title: "Active pills", icon: "square.grid.2x2.fill",              color: "#F5A524").tag("activepills")
-                        SettingsSidebarRow(title: "Agents",       icon: "terminal.fill",                     color: "#3B9EFF").tag("agents")
-                        SettingsSidebarRow(title: "Chat",         icon: "bubble.left.and.bubble.right.fill", color: "#E07950").tag("chat")
-                        SettingsSidebarRow(title: "Integrations", icon: "puzzlepiece.extension.fill",        color: "#7C5CFF").tag("integrations")
-                        SettingsSidebarRow(title: "Shortcuts",    icon: "keyboard.fill",                     color: "#6366F1").tag("shortcuts")
-                    }
-                    .listStyle(.sidebar)
-                    .scrollContentBackground(.hidden)
-                }
+        NavigationSplitView {
+            List(selection: Binding(
+                get: { Optional(selectedSection) },
+                set: { if let v = $0 { selectedSection = v; statusMessage = "" } }
+            )) {
+                SettingsSidebarRow(title: "General",      icon: "gearshape.fill",                    color: "#8E939C").tag("general")
+                SettingsSidebarRow(title: "Appearance",   icon: "paintbrush.fill",                   color: "#EC4899").tag("appearance")
+                SettingsSidebarRow(title: "Active pills", icon: "square.grid.2x2.fill",              color: "#F5A524").tag("activepills")
+                SettingsSidebarRow(title: "Agents",       icon: "terminal.fill",                     color: "#3B9EFF").tag("agents")
+                SettingsSidebarRow(title: "Chat",         icon: "bubble.left.and.bubble.right.fill", color: "#E07950").tag("chat")
+                SettingsSidebarRow(title: "Integrations", icon: "puzzlepiece.extension.fill",        color: "#7C5CFF").tag("integrations")
+                SettingsSidebarRow(title: "Shortcuts",    icon: "keyboard.fill",                     color: "#6366F1").tag("shortcuts")
             }
-            .frame(width: 200)
-
-            Divider()
-
-            // Detail panel
-            VStack(alignment: .leading, spacing: 0) {
-                Text(sectionTitle)
-                    .font(.title2)
-                    .fontWeight(.semibold)
-                    .padding(.horizontal, 20)
-                    .padding(.top, 20)
-                    .padding(.bottom, 12)
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 18) {
-                        sectionContent
+            .listStyle(.sidebar)
+            .navigationSplitViewColumnWidth(min: 190, ideal: 210, max: 250)
+            .safeAreaInset(edge: .top) {
+                HStack(alignment: .center, spacing: 10) {
+                    Image(nsImage: NSApplication.shared.applicationIconImage)
+                        .resizable()
+                        .frame(width: 32, height: 32)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Coucou")
+                            .font(.system(size: 13, weight: .semibold))
+                        Text(appVersion)
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
                     }
-                    .padding(.horizontal, 20)
-                    .padding(.bottom, 16)
+                    Spacer()
                 }
-                if !statusMessage.isEmpty {
-                    Divider()
-                    Text(statusMessage)
-                        .font(.system(size: 12))
-                        .foregroundColor(statusMessage.hasPrefix("❌") ? .red : .secondary)
-                        .padding(.horizontal, 20)
-                        .padding(.vertical, 8)
+                .padding(.horizontal, 16)
+                .padding(.top, 14)
+                .padding(.bottom, 8)
+            }
+        } detail: {
+            ZStack {
+                LiquidGlassWindowBackground()
+                    .ignoresSafeArea()
+
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(sectionTitle)
+                        .font(.title2)
+                        .fontWeight(.semibold)
+                        .padding(.horizontal, 24)
+                        .padding(.top, 20)
+                        .padding(.bottom, 12)
+
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 18) {
+                            sectionContent
+                        }
+                        .padding(.horizontal, 24)
+                        .padding(.bottom, 24)
+                    }
+                    .scrollContentBackground(.hidden)
+
+                    if !statusMessage.isEmpty {
+                        Divider()
+                        Text(statusMessage)
+                            .font(.system(size: 12))
+                            .foregroundColor(statusMessage.hasPrefix("❌") ? .red : .secondary)
+                            .padding(.horizontal, 24)
+                            .padding(.vertical, 8)
+                    }
                 }
             }
         }
+        .background(LiquidGlassWindowBackground())
         .onAppear {
             #if !APPSTORE
             state.refreshPlanRelayState()
@@ -224,6 +225,7 @@ struct SettingsView: View {
     private var sectionTitle: String {
         switch selectedSection {
         case "general":      return String(localized: "General")
+        case "appearance":   return String(localized: "Appearance & Theme")
         case "activepills":  return String(localized: "Active pills")
         case "agents":       return String(localized: "Agents")
         case "chat":         return String(localized: "Chat")
@@ -235,6 +237,7 @@ struct SettingsView: View {
 
     @ViewBuilder private var sectionContent: some View {
         switch selectedSection {
+        case "appearance":   appearanceSection
         case "activepills":  activePillsSection
         case "agents":       agentsSection
         case "chat":         chatSection
@@ -244,9 +247,337 @@ struct SettingsView: View {
         }
     }
 
+    // MARK: - Appearance section
+
+    @ViewBuilder private var appearanceSection: some View {
+        // Theme Selector (Coucou Themes with Liquid Glass)
+        GroupBox {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Chủ đề & Hiệu ứng kính (Themes & Liquid Glass)")
+                            .font(.system(size: 13, weight: .semibold))
+                        Text("Tùy chọn phong cách hiển thị cho Dynamic Island, card popover và thanh trạng thái.")
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
+                    }
+                    Spacer()
+                    // Current Theme badge
+                    HStack(spacing: 6) {
+                        Image(systemName: state.coucouTheme.iconSymbol)
+                            .foregroundColor(Color(hex: state.coucouTheme.accentHex))
+                        Text(state.coucouTheme.displayName)
+                            .font(.system(size: 11, weight: .medium))
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color(hex: state.coucouTheme.accentHex).opacity(0.15))
+                    .clipShape(Capsule())
+                }
+
+                Divider()
+
+                LazyVGrid(columns: [
+                    GridItem(.flexible(), spacing: 12),
+                    GridItem(.flexible(), spacing: 12)
+                ], spacing: 12) {
+                    ForEach(CoucouTheme.allCases) { theme in
+                        Button {
+                            withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
+                                state.coucouTheme = theme
+                            }
+                            NSHapticFeedbackManager.defaultPerformer.perform(.generic, performanceTime: .now)
+                        } label: {
+                            VStack(alignment: .leading, spacing: 10) {
+                                HStack(alignment: .center, spacing: 10) {
+                                    ZStack {
+                                        RoundedRectangle(cornerRadius: 8)
+                                            .fill(
+                                                LinearGradient(
+                                                    colors: [Color(hex: theme.islandTopColor), Color(hex: theme.islandBottomColor)],
+                                                    startPoint: .topLeading,
+                                                    endPoint: .bottomTrailing
+                                                )
+                                            )
+                                            .frame(width: 32, height: 32)
+                                            .overlay(
+                                                RoundedRectangle(cornerRadius: 8)
+                                                    .stroke(Color.white.opacity(theme.rimHighlightOpacity), lineWidth: 1)
+                                            )
+
+                                        Image(systemName: theme.iconSymbol)
+                                            .font(.system(size: 14, weight: .semibold))
+                                            .foregroundColor(Color(hex: theme.accentHex))
+                                    }
+
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        HStack(spacing: 6) {
+                                            Text(theme.displayName)
+                                                .font(.system(size: 12, weight: .semibold))
+                                                .foregroundColor(.primary)
+
+                                            if theme.isGlass {
+                                                Text("Glass")
+                                                    .font(.system(size: 9, weight: .bold))
+                                                    .foregroundColor(Color(hex: "#38BDF8"))
+                                                    .padding(.horizontal, 5)
+                                                    .padding(.vertical, 1.5)
+                                                    .background(Color(hex: "#38BDF8").opacity(0.15))
+                                                    .clipShape(Capsule())
+                                            }
+                                        }
+
+                                        Text(theme.description)
+                                            .font(.system(size: 10.5))
+                                            .foregroundColor(.secondary)
+                                            .lineLimit(2)
+                                            .multilineTextAlignment(.leading)
+                                    }
+
+                                    Spacer(minLength: 4)
+
+                                    if state.coucouTheme == theme {
+                                        Image(systemName: "checkmark.circle.fill")
+                                            .font(.system(size: 16))
+                                            .foregroundColor(Color(hex: theme.accentHex))
+                                    } else {
+                                        Circle()
+                                            .stroke(Color.secondary.opacity(0.3), lineWidth: 1.5)
+                                            .frame(width: 16, height: 16)
+                                    }
+                                }
+
+                                // Color preview swatches
+                                HStack(spacing: 6) {
+                                    RoundedRectangle(cornerRadius: 4)
+                                        .fill(Color(hex: theme.islandTopColor))
+                                        .frame(height: 6)
+                                    RoundedRectangle(cornerRadius: 4)
+                                        .fill(Color(hex: theme.islandBottomColor))
+                                        .frame(height: 6)
+                                    RoundedRectangle(cornerRadius: 4)
+                                        .fill(Color(hex: theme.accentHex))
+                                        .frame(width: 20, height: 6)
+                                }
+                            }
+                            .padding(12)
+                            .background(
+                                RoundedRectangle(cornerRadius: 12)
+                                    .fill(state.coucouTheme == theme ? Color(hex: theme.accentHex).opacity(0.08) : Color(NSColor.controlBackgroundColor).opacity(0.6))
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 12)
+                                    .stroke(
+                                        state.coucouTheme == theme
+                                            ? Color(hex: theme.accentHex).opacity(0.8)
+                                            : Color.primary.opacity(0.08),
+                                        lineWidth: state.coucouTheme == theme ? 1.5 : 1
+                                    )
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            .padding(10)
+        }
+
+        // Mochi Wardrobe & Companion
+        GroupBox {
+            VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Tủ đồ trang phục của Mochi (Wardrobe)")
+                        .font(.system(size: 13, weight: .semibold))
+                    Text("Thay đổi phụ kiện, mũ hoặc trang phục cho bé Mochi trên Dynamic Island và Desktop.")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                }
+
+                Divider()
+
+                LazyVGrid(columns: [
+                    GridItem(.flexible(), spacing: 8),
+                    GridItem(.flexible(), spacing: 8),
+                    GridItem(.flexible(), spacing: 8)
+                ], spacing: 8) {
+                    ForEach(Outfit.allCases, id: \.rawValue) { outfit in
+                        Button {
+                            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                                state.mochiOutfitSelection = outfit
+                            }
+                            NSHapticFeedbackManager.defaultPerformer.perform(.generic, performanceTime: .now)
+                        } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: outfitIcon(for: outfit))
+                                    .font(.system(size: 12))
+                                    .foregroundColor(state.mochiOutfitSelection == outfit ? Color(hex: "#EC4899") : .secondary)
+                                    .frame(width: 16)
+
+                                Text(outfit.displayName)
+                                    .font(.system(size: 11.5, weight: state.mochiOutfitSelection == outfit ? .semibold : .regular))
+                                    .foregroundColor(state.mochiOutfitSelection == outfit ? .primary : .secondary)
+                                    .lineLimit(1)
+
+                                Spacer(minLength: 0)
+
+                                if state.mochiOutfitSelection == outfit {
+                                    Image(systemName: "checkmark")
+                                        .font(.system(size: 10, weight: .bold))
+                                        .foregroundColor(Color(hex: "#EC4899"))
+                                }
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 8)
+                            .background(state.mochiOutfitSelection == outfit ? Color(hex: "#EC4899").opacity(0.12) : Color(NSColor.controlBackgroundColor).opacity(0.5))
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(state.mochiOutfitSelection == outfit ? Color(hex: "#EC4899").opacity(0.5) : Color.gray.opacity(0.15), lineWidth: 1)
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            .padding(10)
+        }
+
+        // Screen Position
+        GroupBox {
+            VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Vị trí hiển thị Coucou (Screen Position)")
+                        .font(.system(size: 13, weight: .semibold))
+                    Text("Chọn vị trí neo của Dynamic Island trên màn hình: Notch hoặc cạnh viền/góc.")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                }
+
+                Divider()
+
+                LazyVGrid(columns: [
+                    GridItem(.flexible()),
+                    GridItem(.flexible()),
+                    GridItem(.flexible())
+                ], spacing: 10) {
+                    ForEach(CoucouPosition.allCases) { pos in
+                        Button {
+                            withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                                state.coucouPosition = pos
+                            }
+                        } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: pos.iconSymbol)
+                                    .font(.system(size: 13, weight: .medium))
+                                    .foregroundColor(state.coucouPosition == pos ? Color(hex: "#38BDF8") : .secondary)
+
+                                Text(pos.displayName)
+                                    .font(.system(size: 12, weight: state.coucouPosition == pos ? .semibold : .regular))
+                                    .foregroundColor(state.coucouPosition == pos ? .primary : .secondary)
+                                    .lineLimit(1)
+
+                                Spacer(minLength: 0)
+
+                                if state.coucouPosition == pos {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .font(.system(size: 11))
+                                        .foregroundColor(Color(hex: "#38BDF8"))
+                                }
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 8)
+                            .background(state.coucouPosition == pos ? Color(hex: "#38BDF8").opacity(0.12) : Color(NSColor.controlBackgroundColor))
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(state.coucouPosition == pos ? Color(hex: "#38BDF8").opacity(0.4) : Color.gray.opacity(0.18), lineWidth: 1)
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            .padding(10)
+        }
+
+        // Apple Design Info
+        GroupBox {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 18))
+                    .foregroundColor(Color(hex: "#38BDF8"))
+                    .frame(width: 24, height: 24)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Apple Native Liquid Glass Architecture")
+                        .font(.system(size: 12, weight: .semibold))
+                    Text("Giao diện cài đặt và đảo notch sử dụng hệ thống NSVisualEffectView kết hợp vật liệu kính mờ tự nhiên (translucent materials) chuẩn macOS Sequoia, hài hòa tuyệt đối với hình nền và chế độ hiển thị hệ thống.")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(10)
+        }
+    }
+
+    private func outfitIcon(for outfit: Outfit) -> String {
+        switch outfit {
+        case .auto:         return "sparkles"
+        case .none:         return "circle.slash"
+        case .partyHat:     return "party.popper.fill"
+        case .beanie:       return "snow"
+        case .crown:        return "crown.fill"
+        case .sunglasses:   return "sunglasses.fill"
+        case .roundGlasses: return "eyeglasses"
+        case .bow:          return "gift.fill"
+        case .scarf:        return "wind"
+        case .witchHat:     return "moon.stars.fill"
+        case .pumpkin:      return "flame.fill"
+        case .santaHat:     return "giftcard.fill"
+        case .bunnyEars:    return "hare.fill"
+        }
+    }
+
     // MARK: - General section
 
     @ViewBuilder private var generalSection: some View {
+        GroupBox("Appearance & Theme") {
+            HStack(spacing: 12) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(
+                            LinearGradient(
+                                colors: [Color(hex: state.coucouTheme.islandTopColor), Color(hex: state.coucouTheme.islandBottomColor)],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                        .frame(width: 36, height: 36)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(Color.white.opacity(state.coucouTheme.rimHighlightOpacity), lineWidth: 1)
+                        )
+                    Image(systemName: state.coucouTheme.iconSymbol)
+                        .foregroundColor(Color(hex: state.coucouTheme.accentHex))
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Chủ đề: \(state.coucouTheme.displayName)")
+                        .font(.system(size: 12, weight: .semibold))
+                    Text("Tùy chọn phong cách Liquid Glass và trang phục Mochi tại mục Appearance.")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                }
+                Spacer()
+                Button("Đổi chủ đề…") {
+                    selectedSection = "appearance"
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+            }
+            .padding(6)
+        }
+
         GroupBox(String(localized: "demo.groupbox.title")) {
             VStack(alignment: .leading, spacing: 8) {
                 Text(String(localized: "demo.description"))
@@ -1672,6 +2003,26 @@ struct SettingsView: View {
                 .disabled(atMax)
             }
         }
+    }
+}
+
+// MARK: - Liquid Glass Background (NSVisualEffectView .underWindowBackground)
+
+struct LiquidGlassWindowBackground: NSViewRepresentable {
+    var material: NSVisualEffectView.Material = .underWindowBackground
+    var blendingMode: NSVisualEffectView.BlendingMode = .behindWindow
+
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let v = NSVisualEffectView()
+        v.material = material
+        v.blendingMode = blendingMode
+        v.state = .active
+        return v
+    }
+
+    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
+        nsView.material = material
+        nsView.blendingMode = blendingMode
     }
 }
 

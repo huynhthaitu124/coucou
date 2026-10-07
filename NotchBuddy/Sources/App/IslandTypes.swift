@@ -38,6 +38,122 @@ public enum CoucouPosition: String, CaseIterable, Identifiable, Codable, Sendabl
     }
 }
 
+// MARK: - Coucou Theme
+
+public enum CoucouTheme: String, CaseIterable, Identifiable, Codable, Sendable {
+    case liquidGlass = "liquidGlass"  // Liquid Glass (Kính lỏng macOS trong suốt)
+    case oledDark    = "oledDark"     // OLED Dark (Đen tuyền nguyên bản)
+    case cyberpunk   = "cyberpunk"    // Cyberpunk Neon
+    case sakura      = "sakura"       // Sakura Pastel
+    case matcha      = "matcha"       // Matcha Green
+    case midnight    = "midnight"     // Midnight Nebula
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .liquidGlass: return "Liquid Glass"
+        case .oledDark:    return "OLED Dark"
+        case .cyberpunk:   return "Cyberpunk"
+        case .sakura:      return "Sakura"
+        case .matcha:      return "Matcha"
+        case .midnight:    return "Midnight"
+        }
+    }
+
+    public var description: String {
+        switch self {
+        case .liquidGlass: return "Kính lỏng mờ đục macOS, phản chiếu ánh sáng môi trường tự nhiên"
+        case .oledDark:    return "Sắc đen huyền thoại sâu thẳm, tối ưu hiển thị trên màn hình OLED"
+        case .cyberpunk:   return "Đèn vi tính tương lai với viền neon xanh điện quang rực rỡ"
+        case .sakura:      return "Sắc hồng hoa anh đào pastel dịu nhẹ và trang nhã"
+        case .matcha:      return "Tone trà xanh thanh khiết, thư thái và tinh tế"
+        case .midnight:    return "Tím vũ trụ huyền bí đắm chìm trong đêm sâu"
+        }
+    }
+
+    public var iconSymbol: String {
+        switch self {
+        case .liquidGlass: return "drop.fill"
+        case .oledDark:    return "moon.fill"
+        case .cyberpunk:   return "bolt.fill"
+        case .sakura:      return "heart.fill"
+        case .matcha:      return "leaf.fill"
+        case .midnight:    return "sparkles"
+        }
+    }
+
+    public var accentHex: String {
+        switch self {
+        case .liquidGlass: return "#38BDF8"
+        case .oledDark:    return "#71717A"
+        case .cyberpunk:   return "#06B6D4"
+        case .sakura:      return "#F472B6"
+        case .matcha:      return "#10B981"
+        case .midnight:    return "#8B5CF6"
+        }
+    }
+
+    public var islandTopColor: String {
+        switch self {
+        case .liquidGlass: return "#1A1D24"
+        case .oledDark:    return "#090A0D"
+        case .cyberpunk:   return "#0B1528"
+        case .sakura:      return "#251620"
+        case .matcha:      return "#112019"
+        case .midnight:    return "#17122B"
+        }
+    }
+
+    public var islandBottomColor: String {
+        switch self {
+        case .liquidGlass: return "#0E1015"
+        case .oledDark:    return "#050608"
+        case .cyberpunk:   return "#050B14"
+        case .sakura:      return "#150C12"
+        case .matcha:      return "#09130F"
+        case .midnight:    return "#0A0716"
+        }
+    }
+
+    public var cardTopColor: String {
+        switch self {
+        case .liquidGlass: return "#232630"
+        case .oledDark:    return "#121318"
+        case .cyberpunk:   return "#0F1E38"
+        case .sakura:      return "#311C2A"
+        case .matcha:      return "#172A21"
+        case .midnight:    return "#221A3E"
+        }
+    }
+
+    public var cardBottomColor: String {
+        switch self {
+        case .liquidGlass: return "#161820"
+        case .oledDark:    return "#0C0D11"
+        case .cyberpunk:   return "#091222"
+        case .sakura:      return "#1E111A"
+        case .matcha:      return "#0E1C15"
+        case .midnight:    return "#130E26"
+        }
+    }
+
+    public var rimHighlightOpacity: Double {
+        switch self {
+        case .liquidGlass: return 0.38
+        case .oledDark:    return 0.18
+        case .cyberpunk:   return 0.50
+        case .sakura:      return 0.28
+        case .matcha:      return 0.25
+        case .midnight:    return 0.38
+        }
+    }
+
+    public var isGlass: Bool {
+        self == .liquidGlass
+    }
+}
+
 // MARK: - Island Mode
 
 enum IslandMode: String, CaseIterable {
@@ -225,7 +341,7 @@ enum IslandConst {
         .searching: ViewLayout(height: 160, botX: 66,  botY: nil, botDiameter: 60, agentMode: .column),
         .result:    ViewLayout(height: 160, botX: 66,  botY: nil, botDiameter: 60, agentMode: .column),
         .note:      ViewLayout(height: 160, botX: 60,  botY: nil, botDiameter: 50, agentMode: .column),
-        .settings:  ViewLayout(height: 255, botX: 54,  botY: 148, botDiameter: 46, agentMode: .none),
+        .settings:  ViewLayout(height: 280, botX: 54,  botY: 160, botDiameter: 46, agentMode: .none),
         .history:   ViewLayout(height: 280, botX: 52,  botY: nil, botDiameter: 0,  agentMode: .none),
         // Greeting: bot drawn by GreetingCanvasView; no BotPlacement needed
         .greeting:  ViewLayout(height: 150, botX: 320, botY: 90,  botDiameter: 0,  agentMode: .none),

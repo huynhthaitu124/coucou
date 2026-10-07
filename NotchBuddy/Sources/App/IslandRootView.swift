@@ -370,15 +370,15 @@ struct IslandContainer: View {
         let vWidth = virtualWidth
 
         return ZStack(alignment: .topLeading) {
-            // Layer 1: Deep OLED obsidian black base (card ngoài giữ màu đen)
+            // Layer 1: Island Base (styled by CoucouTheme: Liquid Glass / OLED / etc.)
             IslandShape(width: vWidth, height: islandHeight,
                         cornerRadius: cornerRadius, topRadius: islandTopRadius,
                         position: state.coucouPosition, earRadius: earR)
                 .fill(
                     LinearGradient(
                         colors: [
-                            Color(hex: "#090A0D"),
-                            Color(hex: "#050608")
+                            Color(hex: state.coucouTheme.islandTopColor).opacity(state.coucouTheme.isGlass ? 0.82 : 1.0),
+                            Color(hex: state.coucouTheme.islandBottomColor).opacity(state.coucouTheme.isGlass ? 0.90 : 1.0)
                         ],
                         startPoint: .top,
                         endPoint: .bottom
@@ -392,14 +392,14 @@ struct IslandContainer: View {
                 .stroke(
                     LinearGradient(
                         stops: [
-                            .init(color: Color.white.opacity(0.18), location: 0.0),
-                            .init(color: Color.white.opacity(0.08), location: 0.35),
-                            .init(color: Color.white.opacity(0.03), location: 1.0)
+                            .init(color: Color.white.opacity(state.coucouTheme.rimHighlightOpacity), location: 0.0),
+                            .init(color: Color.white.opacity(state.coucouTheme.rimHighlightOpacity * 0.45), location: 0.35),
+                            .init(color: Color.white.opacity(0.04), location: 1.0)
                         ],
                         startPoint: .top,
                         endPoint: .bottom
                     ),
-                    lineWidth: 0.85
+                    lineWidth: state.coucouTheme.isGlass ? 1.0 : 0.85
                 )
 
             // Content

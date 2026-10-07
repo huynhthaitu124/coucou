@@ -4553,13 +4553,13 @@ struct CardBackground<Content: View>: View {
     var body: some View {
         let cardRadius: CGFloat = state.coucouPosition == .notch ? 18 : 20
         return ZStack {
-            // Nền chính của card bên trong: giữ default là màu hiện tại
+            // Nền chính của card bên trong: áp dụng CoucouTheme
             RoundedRectangle(cornerRadius: cardRadius, style: .continuous)
                 .fill(
                     LinearGradient(
                         colors: [
-                            Color(hex: "#121318"),
-                            Color(hex: "#0C0D11")
+                            Color(hex: state.coucouTheme.cardTopColor).opacity(state.coucouTheme.isGlass ? 0.76 : 1.0),
+                            Color(hex: state.coucouTheme.cardBottomColor).opacity(state.coucouTheme.isGlass ? 0.88 : 1.0)
                         ],
                         startPoint: .top,
                         endPoint: .bottom
@@ -4601,7 +4601,7 @@ struct CardBackground<Content: View>: View {
                 .stroke(
                     LinearGradient(
                         stops: [
-                            .init(color: Color.white.opacity(0.12), location: 0),
+                            .init(color: Color.white.opacity(state.coucouTheme.isGlass ? 0.22 : 0.12), location: 0),
                             .init(color: Color.white.opacity(0.04), location: 1)
                         ],
                         startPoint: .top,
@@ -4626,9 +4626,18 @@ extension CardBackground where Content == EmptyView {
     var body: some View {
         let cardRadius: CGFloat = state.coucouPosition == .notch ? 18 : 20
         return ZStack {
-            // Nền chính của card bên trong: giữ default là màu hiện tại
+            // Nền chính của card bên trong: áp dụng CoucouTheme
             RoundedRectangle(cornerRadius: cardRadius)
-                .fill(Color(hex: "#141518"))
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            Color(hex: state.coucouTheme.cardTopColor).opacity(state.coucouTheme.isGlass ? 0.76 : 1.0),
+                            Color(hex: state.coucouTheme.cardBottomColor).opacity(state.coucouTheme.isGlass ? 0.88 : 1.0)
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
 
             // Effect 1: Bottom Ambient Bloom theo state
             RoundedRectangle(cornerRadius: cardRadius)
@@ -4662,7 +4671,7 @@ extension CardBackground where Content == EmptyView {
 
             // Effect 3: Viền bo góc
             RoundedRectangle(cornerRadius: cardRadius)
-                .stroke(Color.white.opacity(0.04), lineWidth: 1)
+                .stroke(Color.white.opacity(state.coucouTheme.isGlass ? 0.16 : 0.05), lineWidth: 1)
         }
     }
 }
@@ -5222,6 +5231,55 @@ struct SettingsIslandView: View {
                             Image(systemName: state.coucouPosition.iconSymbol)
                                 .font(.system(size: 10))
                             Text(state.coucouPosition.displayName)
+                                .font(.system(size: 11, weight: .medium))
+                            Image(systemName: "chevron.up.chevron.down")
+                                .font(.system(size: 7.5))
+                                .foregroundColor(Color(hex: "#71717A"))
+                        }
+                        .foregroundColor(Color(hex: "#F4F4F5"))
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3.5)
+                        .background(Color.white.opacity(0.06))
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6)
+                                .stroke(Color.white.opacity(0.12), lineWidth: 0.8)
+                        )
+                    }
+                    .menuStyle(.borderlessButton)
+                }
+
+                // Theme row
+                HStack(spacing: 10) {
+                    Image(systemName: "paintbrush")
+                        .font(.system(size: 12))
+                        .foregroundColor(Color(hex: "#8E939C"))
+                        .frame(width: 16)
+                    Text("Theme (Chủ đề)")
+                        .font(.system(size: 12))
+                        .foregroundColor(Color(hex: "#C5C8CD"))
+                    Spacer()
+                    Menu {
+                        ForEach(CoucouTheme.allCases) { th in
+                            Button {
+                                withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                                    state.coucouTheme = th
+                                }
+                            } label: {
+                                HStack {
+                                    if state.coucouTheme == th {
+                                        Image(systemName: "checkmark")
+                                    }
+                                    Text(th.displayName)
+                                }
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: 4.5) {
+                            Image(systemName: state.coucouTheme.iconSymbol)
+                                .font(.system(size: 10))
+                                .foregroundColor(Color(hex: state.coucouTheme.accentHex))
+                            Text(state.coucouTheme.displayName)
                                 .font(.system(size: 11, weight: .medium))
                             Image(systemName: "chevron.up.chevron.down")
                                 .font(.system(size: 7.5))
