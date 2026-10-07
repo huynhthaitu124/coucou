@@ -1,5 +1,43 @@
 import Foundation
 
+// MARK: - Coucou Screen Position
+
+public enum CoucouPosition: String, CaseIterable, Identifiable, Codable, Sendable {
+    case notch       = "notch"        // Đỉnh màn hình (Tai thỏ / Top Center)
+    case leftEdge    = "leftEdge"     // Cạnh trái màn hình
+    case rightEdge   = "rightEdge"    // Cạnh phải màn hình
+    case topLeft     = "topLeft"      // Góc trên - trái
+    case topRight    = "topRight"     // Góc trên - phải
+    case bottomLeft  = "bottomLeft"   // Góc dưới - trái
+    case bottomRight = "bottomRight"  // Góc dưới - phải
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .notch:       return "Notch (Tai thỏ)"
+        case .leftEdge:    return "Cạnh trái"
+        case .rightEdge:   return "Cạnh phải"
+        case .topLeft:     return "Góc trên - trái"
+        case .topRight:    return "Góc trên - phải"
+        case .bottomLeft:  return "Góc dưới - trái"
+        case .bottomRight: return "Góc dưới - phải"
+        }
+    }
+
+    public var iconSymbol: String {
+        switch self {
+        case .notch:       return "menubar.dock.rectangle"
+        case .leftEdge:    return "arrow.left.to.line"
+        case .rightEdge:   return "arrow.right.to.line"
+        case .topLeft:     return "arrow.up.left.square"
+        case .topRight:    return "arrow.up.right.square"
+        case .bottomLeft:  return "arrow.down.left.square"
+        case .bottomRight: return "arrow.down.right.square"
+        }
+    }
+}
+
 // MARK: - Island Mode
 
 enum IslandMode: String, CaseIterable {
@@ -147,11 +185,11 @@ enum IslandConst {
         .uploading: ViewLayout(height: 176, botX: 46,  botY: 118, botDiameter: 20, agentMode: .none),
         .choose:    ViewLayout(height: 176, botX: 60,  botY: 101, botDiameter: 52, agentMode: .column),
         .mail:      ViewLayout(height: 240, botX: 56,  botY: nil, botDiameter: 46, agentMode: .column),
-        .prompt:    ViewLayout(height: 160, botX: 52,  botY: nil, botDiameter: 44, agentMode: .column),
-        .searching: ViewLayout(height: 160, botX: 52,  botY: nil, botDiameter: 44, agentMode: .column),
-        .result:    ViewLayout(height: 160, botX: 52,  botY: nil, botDiameter: 44, agentMode: .column),
+        .prompt:    ViewLayout(height: 160, botX: 66,  botY: nil, botDiameter: 60, agentMode: .column),
+        .searching: ViewLayout(height: 160, botX: 66,  botY: nil, botDiameter: 60, agentMode: .column),
+        .result:    ViewLayout(height: 160, botX: 66,  botY: nil, botDiameter: 60, agentMode: .column),
         .note:      ViewLayout(height: 160, botX: 60,  botY: nil, botDiameter: 50, agentMode: .column),
-        .settings:  ViewLayout(height: 160, botX: 54,  botY: nil, botDiameter: 46, agentMode: .none),
+        .settings:  ViewLayout(height: 195, botX: 54,  botY: nil, botDiameter: 46, agentMode: .none),
         .history:   ViewLayout(height: 280, botX: 52,  botY: nil, botDiameter: 0,  agentMode: .none),
         // Greeting: bot drawn by GreetingCanvasView; no BotPlacement needed
         .greeting:  ViewLayout(height: 150, botX: 320, botY: 90,  botDiameter: 0,  agentMode: .none),

@@ -209,6 +209,20 @@ final class HookServer: @unchecked Sendable {
     @MainActor
     private func processEvent(name: String, payload: [String: Any]) {
         let state = AppState.shared
+
+        // External proactive input events (from Mail rules, AppleScript, CLI, webhooks, Raycast)
+        if name == "input_event" || name == "proactive_event" {
+            let app = payload["app"] as? String ?? payload["appName"] as? String ?? "External"
+            let title = payload["title"] as? String ?? ""
+            let content = payload["content"] as? String ?? payload["body"] as? String ?? ""
+            let rawSource = payload["source"] as? String ?? "custom_ipc"
+            let source = InputEventSource(rawValue: rawSource) ?? .customIPC
+            let meta = payload["metadata"] as? [String: String] ?? [:]
+            let event = InputEvent(source: source, appName: app, title: title, content: content, metadata: meta)
+            ProactiveEventBus.shared.ingest(event: event, state: state)
+            return
+        }
+
         let sessionId = payload["session_id"] as? String
                      ?? payload["conversation_id"] as? String
                      ?? "unknown"

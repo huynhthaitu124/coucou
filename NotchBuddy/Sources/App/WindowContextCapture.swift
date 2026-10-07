@@ -9,8 +9,7 @@ enum WindowContextCapture {
     /// Returns a PromptContext from the given app (or frontmost external app).
     /// Uses browser AppleScript for real-time active tab title & URL (Safari, Chrome, Arc, Brave, Edge, Firefox).
     /// Uses CGWindowList / AXUIElement for native window title.
-    @MainActor
-    static func captureActive(from app: NSRunningApplication? = nil) -> PromptContext? {
+    static func captureActive(from app: NSRunningApplication? = nil, fallbackApp: NSRunningApplication? = nil) -> PromptContext? {
         #if APPSTORE
         // App Store: no Accessibility API, no screen capture
         return nil
@@ -55,9 +54,9 @@ enum WindowContextCapture {
             targetApp = front
         }
 
-        // 3. Fallback to AppState.shared.lastExternalApp
+        // 3. Fallback to provided fallbackApp
         if targetApp == nil,
-           let last = AppState.shared.lastExternalApp,
+           let last = fallbackApp,
            last.bundleIdentifier != ourBundle {
             targetApp = last
         }
@@ -1141,6 +1140,9 @@ public final class CoucouSentinel: ObservableObject {
             Task { @MainActor in
                 withAnimation(.easeOut(duration: 0.3)) {
                     state?.proactiveSuggestion = nil
+                    if state?.mode != .expanded {
+                        state?.mode = .compact
+                    }
                 }
             }
         }
@@ -1205,6 +1207,9 @@ public final class CoucouSentinel: ObservableObject {
         }
         withAnimation(.easeOut(duration: 0.25)) {
             state.proactiveSuggestion = nil
+            if state.mode != .expanded {
+                state.mode = .compact
+            }
         }
     }
 }

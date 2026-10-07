@@ -28,6 +28,17 @@ final class AppState: ObservableObject {
     var notchHeight: CGFloat = IslandConst.notchHeight
     var hasNotch = true
 
+    // Coucou screen position (Notch, Left, Right, 4 Corners) — persisted
+    @Published var coucouPosition: CoucouPosition = {
+        let saved = UserDefaults.standard.string(forKey: "coucouPosition") ?? CoucouPosition.notch.rawValue
+        return CoucouPosition(rawValue: saved) ?? .notch
+    }() {
+        didSet {
+            UserDefaults.standard.set(coucouPosition.rawValue, forKey: "coucouPosition")
+            NotificationCenter.default.post(name: .coucouPositionChanged, object: coucouPosition)
+        }
+    }
+
     // Last app active before NotchBuddy (for window context capture)
     var lastExternalApp: NSRunningApplication? = nil
 
@@ -52,6 +63,9 @@ final class AppState: ObservableObject {
 
     // File drag-over state (mailbox morph glow + mouth spring)
     @Published var fileDragOver: Bool = false
+
+    // Mascot hover state (read directly by Canvas in TimelineView, non-published to avoid re-rendering entire UI)
+    var isBotHovered: Bool = false
 
     // Sound enabled — persisted
     @Published var soundEnabled: Bool = true {
@@ -142,8 +156,8 @@ final class AppState: ObservableObject {
         }
     }
 
-    // Sound volume (0–0.2) — persisted, synced to SoundEngine
-    @Published var soundVolume: Double = 0.12 {
+    // Sound volume (0–1.0) — persisted, synced to SoundEngine
+    @Published var soundVolume: Double = 0.75 {
         didSet {
             UserDefaults.standard.set(soundVolume, forKey: "soundVolume")
             SoundEngine.shared.volume = Float(soundVolume)
@@ -160,6 +174,15 @@ final class AppState: ObservableObject {
     /// Uses SystemOne / JEV to classify and fuse overlapping contexts (e.g. copied text + open browser)
     func resolveContextWithJev(query: String? = nil) {
         if case .file = self.promptContext { return }
+        // If user explicitly dismissed the context chip, respect dismissal and don't resurrect
+        if let dismissed = self.dismissedContextKey {
+            if let win = self.activeWindowContext, win.contextKey == dismissed {
+                self.activeWindowContext = nil
+            }
+            if let p = self.promptContext, p.contextKey == dismissed {
+                self.promptContext = nil
+            }
+        }
         let resolved = SystemOneEngine.shared.classifyAndResolveContext(
             windowCtx: self.activeWindowContext,
             clipboardCtx: self.recentClipboardContext,
@@ -264,6 +287,10 @@ final class AppState: ObservableObject {
     @Published var notionPages: [NotionPage] = []
     @Published var notionLoaded: Bool = false
     @Published var notionError: String? = nil
+
+    // Installed & active plugins (dynamically scanned from system)
+    @Published var availablePlugins: [CoucouPlugin] = []
+    @Published var activePlugin: CoucouPlugin? = nil
 
     // Chat conversation history & saved sessions
     @Published var chatHistory: [ChatMessage] = []
@@ -407,7 +434,9 @@ final class AppState: ObservableObject {
         let ud = UserDefaults.standard
 
         if let v = ud.object(forKey: "soundEnabled") as? Bool   { soundEnabled = v }
-        if let v = ud.object(forKey: "soundVolume")  as? Double { soundVolume  = v }
+        if let v = ud.object(forKey: "soundVolume")  as? Double {
+            soundVolume = (v <= 0.25 && v > 0) ? 0.75 : v
+        }
         if let v = ud.string(forKey: "claudeModel"),
            !v.trimmingCharacters(in: .whitespaces).isEmpty { claudeModel = v }
         if let v = ud.string(forKey: "chatProvider"), let p = ChatProvider(rawValue: v) { chatProvider = p }
@@ -442,6 +471,18 @@ final class AppState: ObservableObject {
 
         // Load saved chat session history
         loadSessionsFromDisk()
+
+        // Discover installed plugins dynamically
+        loadPlugins()
+    }
+
+    func loadPlugins() {
+        Task.detached(priority: .utility) {
+            let list = PluginDiscovery.discoverInstalledPlugins()
+            await MainActor.run {
+                self.availablePlugins = list
+            }
+        }
     }
 
     // MARK: - Computed
@@ -912,3 +953,170 @@ struct ChatSession: Identifiable, Codable, Equatable {
         return nil
     }
 }
+
+// MARK: - Plugins (Dynamically discovered from ~/.codex/plugins and ~/.gemini/config/plugins)
+
+public struct CoucouPlugin: Identifiable, Equatable, Hashable {
+    public let id: String
+    public let name: String
+    public let description: String
+    public let brandColor: String
+    public let logoPath: String?
+    public let iconSymbol: String
+    public let version: String?
+    public let skillsDirectory: String?
+
+    public init(
+        id: String,
+        name: String,
+        description: String,
+        brandColor: String = "#04B84C",
+        logoPath: String? = nil,
+        iconSymbol: String = "puzzlepiece.extension",
+        version: String? = nil,
+        skillsDirectory: String? = nil
+    ) {
+        self.id = id
+        self.name = name
+        self.description = description
+        self.brandColor = brandColor
+        self.logoPath = logoPath
+        self.iconSymbol = iconSymbol
+        self.version = version
+        self.skillsDirectory = skillsDirectory
+    }
+}
+
+public enum PluginDiscovery {
+    public static func discoverInstalledPlugins() -> [CoucouPlugin] {
+        var results: [CoucouPlugin] = []
+        var seenIds = Set<String>()
+        let fm = FileManager.default
+
+        // 1. Scan Codex plugins cache: ~/.codex/plugins/cache/openai-curated-remote
+        let codexBase = ("~/.codex/plugins/cache/openai-curated-remote" as NSString).expandingTildeInPath
+        if fm.fileExists(atPath: codexBase) {
+            if let pluginDirs = try? fm.contentsOfDirectory(atPath: codexBase) {
+                for pdir in pluginDirs.sorted() {
+                    guard !pdir.hasPrefix(".") else { continue }
+                    let pdirFullPath = (codexBase as NSString).appendingPathComponent(pdir)
+                    guard let versions = try? fm.contentsOfDirectory(atPath: pdirFullPath) else { continue }
+                    let sortedVersions = versions.filter { !$0.hasPrefix(".") }.sorted()
+                    guard let latestVersion = sortedVersions.last else { continue }
+                    let versionDir = (pdirFullPath as NSString).appendingPathComponent(latestVersion)
+
+                    let candidates = [
+                        (versionDir as NSString).appendingPathComponent(".codex-plugin/plugin.json"),
+                        (versionDir as NSString).appendingPathComponent("plugin.json")
+                    ]
+
+                    for jsonPath in candidates {
+                        if fm.fileExists(atPath: jsonPath),
+                           let data = try? Data(contentsOf: URL(fileURLWithPath: jsonPath)),
+                           let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
+
+                            let inter = json["interface"] as? [String: Any] ?? [:]
+                            let name = inter["displayName"] as? String ?? json["name"] as? String ?? pdir
+                            let desc = inter["shortDescription"] as? String ?? json["description"] as? String ?? ""
+                            let color = inter["brandColor"] as? String ?? defaultColor(for: pdir)
+
+                            var logoPath: String? = nil
+                            if let logoRel = inter["logo"] as? String {
+                                let testPaths = [
+                                    ((versionDir as NSString).appendingPathComponent(".codex-plugin") as NSString).appendingPathComponent(logoRel),
+                                    (versionDir as NSString).appendingPathComponent(logoRel),
+                                    (versionDir as NSString).appendingPathComponent("assets/\((logoRel as NSString).lastPathComponent)")
+                                ]
+                                for tp in testPaths {
+                                    if fm.fileExists(atPath: tp) && (tp.hasSuffix(".png") || tp.hasSuffix(".jpg")) {
+                                        logoPath = tp
+                                        break
+                                    }
+                                }
+                            }
+
+                            let symbol = defaultSymbol(for: pdir)
+                            let pid = json["name"] as? String ?? pdir
+                            if !seenIds.contains(pid) {
+                                seenIds.insert(pid)
+                                results.append(CoucouPlugin(
+                                    id: pid,
+                                    name: name,
+                                    description: desc,
+                                    brandColor: color,
+                                    logoPath: logoPath,
+                                    iconSymbol: symbol,
+                                    version: latestVersion,
+                                    skillsDirectory: (versionDir as NSString).appendingPathComponent("skills")
+                                ))
+                            }
+                            break
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Scan Gemini / Antigravity plugins: ~/.gemini/config/plugins
+        let geminiBase = ("~/.gemini/config/plugins" as NSString).expandingTildeInPath
+        if fm.fileExists(atPath: geminiBase) {
+            if let pluginDirs = try? fm.contentsOfDirectory(atPath: geminiBase) {
+                for pdir in pluginDirs.sorted() {
+                    guard !pdir.hasPrefix(".") else { continue }
+                    let pj = ((geminiBase as NSString).appendingPathComponent(pdir) as NSString).appendingPathComponent("plugin.json")
+                    if fm.fileExists(atPath: pj),
+                       let data = try? Data(contentsOf: URL(fileURLWithPath: pj)),
+                       let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
+                        let name = json["name"] as? String ?? pdir
+                        let desc = json["description"] as? String ?? ""
+                        if !seenIds.contains(pdir) {
+                            seenIds.insert(pdir)
+                            results.append(CoucouPlugin(
+                                id: pdir,
+                                name: name,
+                                description: desc,
+                                brandColor: "#3B82F6",
+                                logoPath: nil,
+                                iconSymbol: defaultSymbol(for: pdir),
+                                version: json["version"] as? String,
+                                skillsDirectory: ((geminiBase as NSString).appendingPathComponent(pdir) as NSString).appendingPathComponent("skills")
+                            ))
+                        }
+                    }
+                }
+            }
+        }
+
+        return results
+    }
+
+    private static func defaultColor(for id: String) -> String {
+        switch id {
+        case "investment-banking", "public-equity-investing": return "#04B84C"
+        case "data-analytics": return "#0285FF"
+        case "linear": return "#5E6AD2"
+        case "creative-production": return "#924FF7"
+        case "product-design": return "#FF66AD"
+        case "sales": return "#FB6A22"
+        case "work-pets": return "#10A37F"
+        default: return "#6366F1"
+        }
+    }
+
+    private static func defaultSymbol(for id: String) -> String {
+        switch id {
+        case "investment-banking": return "building.columns"
+        case "public-equity-investing": return "chart.line.uptrend.xyaxis"
+        case "data-analytics": return "chart.bar.xaxis"
+        case "linear": return "arrow.triangle.branch"
+        case "creative-production": return "wand.and.stars"
+        case "product-design": return "square.grid.2x2"
+        case "sales": return "person.line.dotted.person"
+        case "canva", "figma": return "paintbrush"
+        case "work-pets": return "pawprint"
+        case "chrome-devtools-plugin": return "globe"
+        default: return "puzzlepiece.extension"
+        }
+    }
+}
+

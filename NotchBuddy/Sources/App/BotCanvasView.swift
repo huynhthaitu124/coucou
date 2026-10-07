@@ -18,6 +18,7 @@ struct BotCanvasView: View {
                 engine.lookX = lookX(state: state, size: size)
                 engine.lookY = lookY(state: state, size: size)
                 engine.particleOverhang = particleOverhang
+                engine.isHovered = state.isBotHovered
                 // Widen slot when file is hovering over the mailbox (morph > 0.5)
                 // Open mouth (hover=0.20R) when file dragged over box; close when not
                 if engine.morph > 0.3 {
@@ -105,27 +106,64 @@ struct BotCanvasView: View {
         let screen = NSScreen.main ?? NSScreen.screens[0]
         let (islandW, islandH) = islandSize(mode: state.mode, view: state.view,
                                              progress: state.uploadProgress,
-                                             nw: state.notchWidth, nh: state.notchHeight)
+                                             nw: state.notchWidth, nh: state.notchHeight,
+                                             position: state.coucouPosition)
         let (botCx, _, _, _) = botPosition(mode: state.mode, view: state.view,
                                             islandW: islandW, islandH: islandH,
-                                            uploadProgress: state.uploadProgress)
-        // Island is centered on screen; bot is at botCx within island coords
-        let botScreenX = screen.frame.midX - islandW / 2 + botCx
-        return tanh((state.mousePosition.x - botScreenX) / 260)
+                                            uploadProgress: state.uploadProgress,
+                                            position: state.coucouPosition)
+        let botScreenX: CGFloat
+        switch state.coucouPosition {
+        case .notch:
+            botScreenX = screen.frame.midX - islandW / 2 + botCx
+        case .topLeft, .bottomLeft, .leftEdge:
+            botScreenX = botCx
+        case .topRight, .bottomRight, .rightEdge:
+            botScreenX = screen.frame.width - islandW + botCx
+        }
+        let rawLook = tanh((state.mousePosition.x - botScreenX) / 260)
+
+        // When expanded, if mouse is not actively near island, give gentle resting gaze rightward/leftward into card workspace
+        if state.mode == .expanded && !state.isBotHovered {
+            let distToIsland = abs(state.mousePosition.x - botScreenX)
+            if distToIsland > islandW * 0.65 {
+                return (state.coucouPosition == .topRight || state.coucouPosition == .bottomRight || state.coucouPosition == .rightEdge) ? -0.22 : 0.22
+            }
+        }
+        return rawLook
     }
 
     private func lookY(state: AppState, size: CGSize) -> CGFloat {
+        let screen = NSScreen.main ?? NSScreen.screens[0]
         let (islandW, islandH) = islandSize(mode: state.mode, view: state.view,
                                              progress: state.uploadProgress,
-                                             nw: state.notchWidth, nh: state.notchHeight)
+                                             nw: state.notchWidth, nh: state.notchHeight,
+                                             position: state.coucouPosition)
         let actualH: CGFloat = (state.mode == .expanded && state.view == .prompt)
             ? min(300, 240 + CGFloat(state.chatHistory.count) * 40)
             : islandH
         let (_, botCy, _, _) = botPosition(mode: state.mode, view: state.view,
                                              islandW: islandW, islandH: actualH,
-                                             uploadProgress: state.uploadProgress)
-        // Island top = screen top → bot screen Y = botCy from island top
-        return -tanh((state.mousePosition.y - botCy) / 200)
+                                             uploadProgress: state.uploadProgress,
+                                             position: state.coucouPosition)
+        let botScreenY: CGFloat
+        switch state.coucouPosition {
+        case .notch, .topLeft, .topRight:
+            botScreenY = botCy
+        case .leftEdge, .rightEdge:
+            botScreenY = (screen.frame.height - islandH) / 2 + botCy
+        case .bottomLeft, .bottomRight:
+            botScreenY = screen.frame.height - islandH + botCy
+        }
+        let rawLook = -tanh((state.mousePosition.y - botScreenY) / 200)
+
+        if state.mode == .expanded && !state.isBotHovered {
+            let distToIsland = abs(state.mousePosition.y - botScreenY)
+            if distToIsland > actualH * 0.65 {
+                return (state.coucouPosition == .bottomLeft || state.coucouPosition == .bottomRight) ? 0.08 : -0.08
+            }
+        }
+        return rawLook
     }
 }
 

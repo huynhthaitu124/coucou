@@ -29,7 +29,7 @@ private enum GT {
 
 private let GC0     = CGPoint(x: 320, y: 90)   // Mochi center
 private let GHB:    CGFloat = 58                // body height at full size
-private let GASP:   CGFloat = 1.34             // body width/height ratio
+private let GASP:   CGFloat = 1.00              // body width/height ratio (Grokbot circular sphere)
 private let GEAR_X: CGFloat = 40               // ear x from small island left edge (matches BotPlacement compact x=40)
 private let GEAR_HB:CGFloat = 17               // ear body height
 private let GCARD   = CGRect(x: 10, y: 36, width: 620, height: 104)
@@ -242,18 +242,9 @@ private func gRR(_ ctx: CGContext, _ x: CGFloat, _ y: CGFloat, _ w: CGFloat, _ h
 }
 
 private func mochiPath(hw: CGFloat, hh: CGFloat) -> CGPath {
-    let n: CGFloat = 3.2
     let path = CGMutablePath()
-    let steps = 96
-    for i in 0...steps {
-        let a = CGFloat(i)/CGFloat(steps)*2 * .pi
-        let ca = cos(a), sa = sin(a)
-        let px = hw * (ca < 0 ? -1 : 1) * pow(abs(ca), 2/n)
-        let py = hh * (sa < 0 ? -1 : 1) * pow(abs(sa), 2/n)
-        if i == 0 { path.move(to: CGPoint(x: px, y: py)) }
-        else { path.addLine(to: CGPoint(x: px, y: py)) }
-    }
-    path.closeSubpath(); return path
+    path.addEllipse(in: CGRect(x: -hw, y: -hh, width: hw*2, height: hh*2))
+    return path
 }
 
 // Linear gradient fill clipped to path (body-local coords, centered at origin)
@@ -383,20 +374,12 @@ private func drawMochi(_ ctx: CGContext, p: GreetPose) {
     for sd: CGFloat in [-1, 1] {
         ctx.saveGState()
         ctx.translateBy(x: sd*sp+lx, y: ly)
-        if p.eye == .happy {
-            ctx.setLineWidth(er*0.95)
-            ctx.setLineCap(.round)
-            ctx.beginPath()
-            ctx.addArc(center: CGPoint(x: 0, y: er*0.6), radius: er*1.25,
-                       startAngle: .pi*1.15, endAngle: .pi*1.85, clockwise: false)
-            ctx.strokePath()
-        } else if p.eye == .content {
-            ctx.setLineWidth(er*0.95)
-            ctx.setLineCap(.round)
-            ctx.beginPath()
-            ctx.addArc(center: CGPoint(x: 0, y: -er*0.5), radius: er*1.25,
-                       startAngle: .pi*0.15, endAngle: .pi*0.85, clockwise: false)
-            ctx.strokePath()
+        if p.eye == .happy || p.eye == .content {
+            let rw = er * 2.3
+            let rh = er * 0.90
+            let cr: CGFloat = 2.0
+            gRR(ctx, -rw/2, -rh/2, rw, rh, cr)
+            ctx.fillPath()
         } else {
             ctx.scaleBy(x: 1, y: max(0.12, CGFloat(p.open)))
             ctx.addEllipse(in: CGRect(x: -er, y: -er, width: er*2, height: er*2))

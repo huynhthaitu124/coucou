@@ -188,9 +188,12 @@ final class ClaudeService {
 
     // Multi-turn conversation messages (for API)
     private var conversationMessages: [[String: Any]] = []
+    // Track cumulative estimated token count for auto-compaction
+    private var estimatedTotalTokens: Int = 0
 
     func clearConversation() {
         conversationMessages = []
+        estimatedTotalTokens = 0
     }
 
     func restoreConversation(messages: [ChatMessage]) {
@@ -200,45 +203,223 @@ final class ClaudeService {
             let role = (msg.role == .user) ? "user" : "assistant"
             return ["role": role, "content": text]
         }
+        estimatedTotalTokens = conversationMessages.reduce(0) { $0 + Self.estimateTokens(for: $1) }
     }
 
+    // MARK: - Context Window Management & Auto-Compaction
+
+    /// Conservative token estimation: ~4 chars per token for English, ~2.5 for mixed CJK/Vietnamese
+    private static func estimateTokens(for message: [String: Any]) -> Int {
+        let text: String
+        if let s = message["content"] as? String {
+            text = s
+        } else if let blocks = message["content"] as? [[String: Any]] {
+            text = blocks.compactMap { $0["text"] as? String }.joined(separator: "\n")
+        } else {
+            text = ""
+        }
+        // Vietnamese/CJK text averages ~2.5 chars/token; English ~4 chars/token
+        // Use 3.0 as a balanced estimate
+        return max(1, Int(ceil(Double(text.count) / 3.0)))
+    }
+
+    /// Maximum input token budget per provider (leave 20% headroom for output + system prompt)
+    private static func contextBudget(for provider: ChatProvider) -> Int {
+        switch provider {
+        case .anthropic: return 150_000   // 200k window, reserve 50k for output + system
+        case .google:    return 800_000   // 1M window, reserve 200k
+        case .openai:    return 96_000    // 128k window, reserve 32k
+        }
+    }
+
+    /// Auto-compact conversation when estimated tokens exceed the provider's context budget.
+    /// Preserves the N most recent messages and compresses older messages into a single summary.
+    private func compactConversationIfNeeded(provider: ChatProvider) {
+        let budget = Self.contextBudget(for: provider)
+        guard estimatedTotalTokens > budget else { return }
+
+        coucouLog("[Session Compact] Token estimate \(estimatedTotalTokens) exceeds budget \(budget) for \(provider.displayName). Compacting...")
+
+        // Keep the 6 most recent messages (≈3 user-assistant turns) intact
+        let keepCount = min(6, conversationMessages.count)
+        let recentMessages = Array(conversationMessages.suffix(keepCount))
+        let oldMessages = Array(conversationMessages.dropLast(keepCount))
+
+        guard !oldMessages.isEmpty else { return }
+
+        // Build a compressed summary of the old conversation
+        var summaryParts: [String] = []
+        for msg in oldMessages {
+            let role = (msg["role"] as? String) ?? "unknown"
+            let text: String
+            if let s = msg["content"] as? String {
+                text = s
+            } else if let blocks = msg["content"] as? [[String: Any]] {
+                text = blocks.compactMap { $0["text"] as? String }.joined(separator: "\n")
+            } else {
+                continue
+            }
+
+            if text.contains("[SESSION COMPACTED") {
+                // Keep earlier summary without endless nesting
+                let cleaned = text
+                    .replacingOccurrences(of: "[SESSION COMPACTED — ", with: "[Prior Context: ")
+                    .replacingOccurrences(of: "[END OF COMPACTED CONTEXT]", with: "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                summaryParts.append(cleaned)
+            } else {
+                // Truncate each old message to max 250 chars to aggressively compress
+                let truncated = text.count > 250 ? String(text.prefix(220)) + "..." : text
+                summaryParts.append("[\(role)]: \(truncated)")
+            }
+        }
+
+        let compactedSummary = """
+        [SESSION COMPACTED — \(oldMessages.count) earlier messages summarized]
+        The following is a compressed summary of the earlier conversation context:
+        \(summaryParts.joined(separator: "\n"))
+        [END OF COMPACTED CONTEXT]
+        """
+
+        // Replace conversation with: compacted summary (as system-injected user context) + recent messages
+        let summaryMessage: [String: Any] = ["role": "user", "content": compactedSummary]
+        let ackMessage: [String: Any] = ["role": "assistant", "content": "Understood. I have the earlier conversation context and will continue from here."]
+
+        conversationMessages = [summaryMessage, ackMessage] + recentMessages
+
+        // Recalculate token estimate
+        estimatedTotalTokens = conversationMessages.reduce(0) { $0 + Self.estimateTokens(for: $1) }
+        coucouLog("[Session Compact] Compacted \(oldMessages.count) old messages. New estimate: \(estimatedTotalTokens) tokens, \(conversationMessages.count) messages remaining.")
+    }
+
+    /// Aggressively compact conversation when an API returns context length/token limit error
+    func forceCompactConversation() {
+        coucouLog("[Session Compact] Force-compacting conversation due to context limit error...")
+        let keepCount = min(2, conversationMessages.count)
+        let recentMessages = Array(conversationMessages.suffix(keepCount))
+        let oldMessages = Array(conversationMessages.dropLast(keepCount))
+        guard !oldMessages.isEmpty else { return }
+
+        var summaryParts: [String] = []
+        for msg in oldMessages {
+            let role = (msg["role"] as? String) ?? "unknown"
+            let text: String
+            if let s = msg["content"] as? String {
+                text = s
+            } else if let blocks = msg["content"] as? [[String: Any]] {
+                text = blocks.compactMap { $0["text"] as? String }.joined(separator: "\n")
+            } else {
+                continue
+            }
+            let truncated = text.count > 150 ? String(text.prefix(130)) + "..." : text
+            summaryParts.append("[\(role)]: \(truncated)")
+        }
+
+        let compactedSummary = """
+        [SESSION COMPACTED — \(oldMessages.count) earlier messages compressed due to context limits]
+        \(summaryParts.suffix(15).joined(separator: "\n"))
+        [END OF COMPACTED CONTEXT]
+        """
+
+        let summaryMessage: [String: Any] = ["role": "user", "content": compactedSummary]
+        let ackMessage: [String: Any] = ["role": "assistant", "content": "Understood. Continuing with recent context."]
+        conversationMessages = [summaryMessage, ackMessage] + recentMessages
+        estimatedTotalTokens = conversationMessages.reduce(0) { $0 + Self.estimateTokens(for: $1) }
+    }
+
+    static func isContextLengthError(_ errorString: String) -> Bool {
+        let lower = errorString.lowercased()
+        return lower.contains("context_length_exceeded")
+            || lower.contains("maximum context length")
+            || lower.contains("prompt is too long")
+            || lower.contains("too many tokens")
+            || lower.contains("token limit")
+            || lower.contains("max_tokens")
+            || lower.contains("resource_exhausted")
+    }
+
+
     private let systemPrompt = """
-    You are Coucou, a lightweight desktop assistant embedded in the user's Mac notch.
+    You are Coucou, an ultra-fast desktop assistant embedded in the user's Mac notch.
 
     PRIMARY CAPABILITIES:
     1. Answer questions directly, clearly, and concisely.
     2. Understand screen & file context: You receive real-time ambient context of the active macOS application, window title, active browser URL, or attached files. Use this context naturally to answer questions or perform actions.
     3. Perform computer tasks using your local tools:
-       - `press_ui_element`: Click or activate a UI button, menu item, or control by its text/title (e.g. 'Connect', 'Build', 'Run', 'Submit', 'Cancel'). Automatically resolves exact screen center coordinates via Accessibility tree or Vision OCR fallback. PREFER THIS tool whenever you want to click a named button or control on screen!
-       - `inspect_window`: Inspect the active macOS window or any app to read its title, URL, visible text, editor content, and UI controls with precise screen coordinates [center: (x, y)]. PREFER THIS over screenshot.
-       - `computer_action`: Mouse clicks, typing, and keyboard shortcuts. When clicking coordinates (`click`, `double_click`), ONLY use [center: (x, y)] coordinates obtained from `inspect_window`. NEVER make up or guess random coordinates (e.g. 300, 180).
-       - `bash`: Quick shell commands (e.g. check battery, disk space, find files, ps/kill, git status, open apps, inspect files).
+       - `press_ui_element`: Click or activate a UI button, menu item, link, or control by its text/title (e.g. 'Connect', 'Build', '42389', 'Run', 'Submit', 'Cancel'). Automatically resolves exact screen center coordinates via Accessibility tree or Vision OCR fallback, and triggers instant browser DOM click in Chrome/Safari/Arc. ALWAYS PREFER THIS tool to click anything on screen!
+       - `browser_cycle_tabs`: Switch/cycle through all open browser tabs one by one with smooth scroll (e.g. 'lướt qua tất cả các tab', 'lướt để tôi đọc'). ALWAYS use this single tool whenever the user asks to browse or cycle through tabs!
+       - `browser_get_content`: Read text, articles, or page contents from the active browser tab via Vision OCR & tab metadata.
+       - `browser_eval`: Execute JavaScript in the active browser tab (Chrome/Safari/Arc/Edge/Brave). Returns JSON-serialized values. Use for precise DOM inspection or filling forms.
+       - `inspect_window`: Inspect native desktop app windows (Xcode, Finder, Notes) to read titles, paths, and UI controls. PREFER THIS over screenshot.
+       - `computer_action`: Mouse clicks, typing, and keyboard shortcuts. When clicking coordinates (`click`, `double_click`), ONLY use [center: (x, y)] coordinates obtained from `inspect_window`. NEVER make up or guess random coordinates.
+       - `bash`: Quick shell commands (e.g. check battery, disk space, find files, ps/kill, git status, open apps).
        - `applescript`: Control native macOS apps (Finder, Music, Safari, active window, System Events).
        - `read_file` / `write_file`: Quick file inspections or edits.
 
-    CONVERSATIONAL MEMORY & CONTINUITY:
-    - ALWAYS pay close attention to prior messages in the conversation history. When the user says "thử lại chuỗi action khi nãy", "làm lại chuỗi action openproject", "làm lại", "tiếp tục", or refers to something discussed earlier, look at the previous turns in the history and execute or adjust that specific task without asking them to repeat details you already know.
-
-    CREDIT SAVING & BEHAVIOR RULES:
-    - To click or interact with UI buttons/controls: ALWAYS prefer `press_ui_element(title: ...)` directly, OR call `inspect_window` first to obtain the exact `[center: (x, y)]` coordinates before calling `computer_action`. NEVER guess coordinates!
-    - To understand what the user is looking at or doing in an app (like Antigravity IDE, Xcode, Chrome, RustDesk), ALWAYS use `inspect_window` instead of `screenshot`.
-    - KEEP RESPONSES SHORT AND DIRECT. Avoid preamble, excessive explanations, or long code blocks unless explicitly requested.
-    - NEVER say "I cannot access your Mac" or ask the user to open Terminal. Execute simple tasks directly using your tools.
-    - Do NOT write lengthy code or complex multi-file programming projects. Keep answers focused.
+    - FAST EXECUTION & MINIMAL STEPS POLICY (CRITICAL):
+    - BE DECISIVE AND FAST: Minimize the number of tool iterations! Do not wander or repeat tool calls.
+    - WHEN ASKED TO TYPE OR SEND A MESSAGE INTO A CHAT APP (e.g. 'gõ vào ô chat là X', 'gửi tin nhắn Y vào Z'):
+      * NEVER call `press_ui_element(title: "chat")`! In desktop apps (Antigravity IDE, Cursor, VS Code, Discord, Slack), "Chat" on screen is a static tab header or menu label at the top, NOT the text input area! Clicking "Chat" clicks the header and fails to focus the text field.
+      * For Antigravity IDE / VS Code / Cursor:
+        1. Activate app: `window_control(action: "activate", app_name: "Antigravity IDE")`.
+        2. Focus chat input: `key_combo(combo: "cmd+l")` (or call `press_ui_element(title: "ô chat", app_name: ...)` which automatically triggers Cmd+L).
+        3. Type the text: `computer_action(action: "type", text: X)`.
+        4. Submit: `key_combo(combo: "enter")`.
+        Complete the entire operation in 2-3 fast steps!
+      * For browser chat: Coucou automatically focuses the active input or contenteditable via DOM.
+    - STRICT HONESTY & ACCURACY (KHÔNG LÀM ĐƯỢC THÌ PHẢI BÁO LÀ KHÔNG LÀM ĐƯỢC):
+      * If any tool returns an error, if Accessibility permissions are blocked by macOS, or if an action cannot be completed, YOU MUST REPORT THE FAILURE DIRECTLY AND HONESTLY to the user!
+      * NEVER claim 'Đã gửi...' or 'Đã thực hiện xong' if a tool returned an error or failed.
+    - CONTEXT RELEVANCE & TOPIC INDEPENDENCE (CRITICAL):
+      * Ambient context tells you what application happens to be open on the user's Mac in the background (e.g. Antigravity IDE, Xcode, Safari).
+      * TOPIC INDEPENDENCE: DO NOT carry over previous desktop automation or application typing tasks into a new query! If previous messages were about interacting with an application (e.g. Antigravity IDE, typing into an editor), but the current user message is a new question (e.g. 'kiểm tra giá vàng', 'thời tiết hôm nay', 'tính 15 * 24', 'giá cổ phiếu', 'tin tức', 'dịch câu này', 'chào bạn'), TREAT IT AS A COMPLETELY NEW AND INDEPENDENT QUERY!
+      * NEVER assume the user wants to type into, click, or automate the background app UNLESS the user EXPLICITLY asks to do an action on it (e.g. 'gõ vào Antigravity', 'nhập vào ô chat của app', 'bấm nút X', 'click vào Y', 'viết code').
+      * For GENERAL QUESTIONS, prices, weather, conversions, calculations, news, or general search (e.g. 'kiểm tra giá vàng', 'giá btc', 'thời tiết hôm nay', 'tính 15 * 24'):
+        -> ANSWER THE QUESTION DIRECTLY using your knowledge or web search!
+        -> NEVER invoke computer automation tools (computer_action, write_text, press_ui_element, mouse_click, key_combo) for general inquiries!
+        -> DO NOT attempt to type the query into the background app!
+    - NATIVE WEB SEARCH & REAL-TIME FACT LOOKUP:
+      * You have access to `web_search(query: ...)` and `web_fetch(url: ...)` to search and read webpages.
+      * EFFICIENCY & SINGLE-PASS RULE (CRITICAL): Search and fetch concisely. DO NOT call `web_search` or `web_fetch` repeatedly in loops. Never call `web_fetch` multiple times for the same URL. Once you have fetched a source or found information, IMMEDIATELY formulate your final answer for the user! In live meeting situations, speed (< 2s) is paramount!
+    - When asked to browse/cycle through tabs: Call `browser_cycle_tabs()` directly in 1 step!
+    - When asked to click, open, or select something: Call `press_ui_element(title: ...)` DIRECTLY.
+    - KEEP RESPONSES SHORT AND DIRECT. Avoid preamble or excessive fluff.
     - Always respond in the user's language (e.g. Vietnamese if asked in Vietnamese).
     """
 
     private let webSearchTools: [[String: Any]] = [
-        ["type": "web_search_20250305", "name": "web_search", "max_uses": 5]
+        [
+            "type": "web_search_20250305",
+            "name": "web_search",
+            "max_uses": 5,
+            "cache_control": ["type": "ephemeral"]
+        ]
     ]
 
-    // MARK: - Chat (multi-turn, natural text + web search)
+    private var activeChatTask: Task<Void, Never>?
+
+    func cancelCurrentChat() {
+        activeChatTask?.cancel()
+        activeChatTask = nil
+        Task { @MainActor in
+            AutonomousAgentEngine.shared.stopMission()
+        }
+    }
 
     func chat(query: String, context: PromptContext?, state: AppState) async {
-        guard state.chatProvider == .anthropic else {
-            await chatOpenAICompatible(query: query, context: context, state: state)
-            return
+        cancelCurrentChat()
+        let t = Task {
+            if state.chatProvider == .anthropic {
+                await chatAnthropicInternal(query: query, context: context, state: state)
+            } else {
+                await chatOpenAICompatible(query: query, context: context, state: state)
+            }
         }
+        activeChatTask = t
+        await t.value
+    }
+
+    private func chatAnthropicInternal(query: String, context: PromptContext?, state: AppState) async {
         guard let key = apiKey, !key.isEmpty else {
             await showError("API key missing. Open settings.", state: state)
             return
@@ -251,12 +432,14 @@ final class ClaudeService {
         if let context = context {
             switch context {
             case .window(let app, let title, let url):
-                var parts: [String] = []
-                if !app.isEmpty { parts.append("App: \(app)") }
-                if !title.isEmpty && title != app { parts.append("Window: \"\(title)\"") }
-                if let url = url, !url.isEmpty { parts.append("URL: \(url)") }
-                if !parts.isEmpty {
-                    userContent.append(["type": "text", "text": "[Active Context: \(parts.joined(separator: " | "))]"])
+                if SystemOneEngine.isQueryRelevantToWindow(query: query, windowCtx: context) {
+                    var parts: [String] = []
+                    if !app.isEmpty { parts.append("App: \(app)") }
+                    if !title.isEmpty && title != app { parts.append("Window: \"\(title)\"") }
+                    if let url = url, !url.isEmpty { parts.append("URL: \(url)") }
+                    if !parts.isEmpty {
+                        userContent.append(["type": "text", "text": "[Background App on Screen (Informational only — DO NOT automate or type into unless user explicitly asks): \(parts.joined(separator: " | "))]"])
+                    }
                 }
             case .file(let name, let fileURL):
                 if let fileURL = fileURL, let block = readFileAsBlock(url: fileURL) {
@@ -281,23 +464,53 @@ final class ClaudeService {
                 userContent.append(["type": "text", "text": compText])
             }
         }
+        // Inject active meeting knowledge cache if available
+        let meetingContext = CoucouContextCache.shared.getMeetingContextInjection()
+        if !meetingContext.isEmpty {
+            userContent.append(["type": "text", "text": meetingContext])
+        }
+
         userContent.append(["type": "text", "text": query])
 
-        conversationMessages.append(["role": "user", "content": userContent])
+        let userMsg: [String: Any] = ["role": "user", "content": userContent]
+        conversationMessages.append(userMsg)
+        estimatedTotalTokens += Self.estimateTokens(for: userMsg)
+
+        // Auto-compact if approaching context window limit
+        compactConversationIfNeeded(provider: .anthropic)
 
         let body: [String: Any] = [
             "model": model,
             "max_tokens": 4096,
             "tools": webSearchTools,
-            "system": systemPrompt,
+            "system": [
+                [
+                    "type": "text",
+                    "text": systemPrompt,
+                    "cache_control": ["type": "ephemeral"]
+                ]
+            ],
             "messages": conversationMessages,
         ]
 
         do {
-            let data = try await callAPI(body: body, key: key, beta: "web-search-2025-03-05")
+            let data = try await callAPI(body: body, key: key, beta: "web-search-2025-03-05,prompt-caching-2024-07-31")
             await handleChatResult(data, state: state)
         } catch {
-            conversationMessages.removeLast()
+            if Self.isContextLengthError(error.localizedDescription) {
+                coucouLog("[Session Compact] Anthropic context length exceeded, retrying with force compact...")
+                forceCompactConversation()
+                var retryBody = body
+                retryBody["messages"] = conversationMessages
+                if let retryData = try? await callAPI(body: retryBody, key: key, beta: "web-search-2025-03-05") {
+                    await handleChatResult(retryData, state: state)
+                    return
+                }
+            }
+            if !conversationMessages.isEmpty {
+                let removed = conversationMessages.removeLast()
+                estimatedTotalTokens = max(0, estimatedTotalTokens - Self.estimateTokens(for: removed))
+            }
             await showError(error.localizedDescription, state: state)
         }
     }
@@ -307,6 +520,21 @@ final class ClaudeService {
         let args = (try? JSONSerialization.jsonObject(with: argsData) as? [String: Any]) ?? [:]
 
         switch name {
+        case "update_plan":
+            let currIdx = (args["current_step_index"] as? NSNumber)?.intValue ?? (args["current_step_index"] as? Int) ?? 0
+            return ("Kế hoạch tự chủ", "Bước \(currIdx + 1)")
+        case "task_complete":
+            return ("Hoàn thành nhiệm vụ", "Đã xác minh mục tiêu")
+        case "update_scratchpad":
+            return ("Ghi nhớ bộ nhớ", "Cập nhật scratchpad")
+        case "web_search":
+            let q = (args["query"] as? String) ?? (args["q"] as? String) ?? argsString
+            let cleanQ = String(q.trimmingCharacters(in: .whitespacesAndNewlines).prefix(50))
+            return ("Tìm kiếm web", cleanQ)
+        case "web_fetch":
+            let u = (args["url"] as? String) ?? argsString
+            let cleanU = String(u.trimmingCharacters(in: .whitespacesAndNewlines).prefix(50))
+            return ("Đọc trang web", cleanU)
         case "bash":
             let cmd = (args["command"] as? String) ?? argsString
             let shortCmd = String(cmd.trimmingCharacters(in: .whitespacesAndNewlines).prefix(60))
@@ -367,6 +595,8 @@ final class ClaudeService {
             return ("Mở trang web", String(target.prefix(45)))
         case "browser_list_tabs":
             return ("Kiểm tra các tab web", nil)
+        case "browser_cycle_tabs":
+            return ("Lướt qua các tab web", nil)
         case "browser_get_content":
             let kw = args["tab_keyword"] as? String
             return ("Đọc nội dung trang web", kw)
@@ -398,17 +628,15 @@ final class ClaudeService {
         }
         guard let url = URL(string: baseURL) else { return }
 
-        // Build messages: system + recent conversation history (last 40 to preserve long multi-turn context) + new user turn
-        var msgs: [[String: Any]] = [["role": "system", "content": systemPrompt]]
-        let recentHistory = conversationMessages.suffix(40)
-        for m in recentHistory {
-            var simplified = m
-            if let content = m["content"] as? [[String: Any]],
-               let textBlock = content.first(where: { ($0["type"] as? String) == "text" }),
-               let text = textBlock["text"] as? String {
-                simplified["content"] = text
+        defer {
+            Task { @MainActor in
+                if state.stateOverride == .working || state.stateOverride == .thinking {
+                    state.stateOverride = nil
+                }
+                if let last = state.chatHistory.indices.last, state.chatHistory[last].isRunning {
+                    state.chatHistory[last].isRunning = false
+                }
             }
-            msgs.append(simplified)
         }
 
         // Add user message with active context (window or file)
@@ -416,12 +644,14 @@ final class ClaudeService {
         if let ctx = context {
             switch ctx {
             case .window(let app, let title, let url):
-                var parts: [String] = []
-                if !app.isEmpty { parts.append("App: \(app)") }
-                if !title.isEmpty && title != app { parts.append("Window: \"\(title)\"") }
-                if let u = url, !u.isEmpty { parts.append("URL: \(u)") }
-                if !parts.isEmpty {
-                    contextPrefix = "[Active Window Context: \(parts.joined(separator: " | "))]\n"
+                if SystemOneEngine.isQueryRelevantToWindow(query: query, windowCtx: ctx) {
+                    var parts: [String] = []
+                    if !app.isEmpty { parts.append("App: \(app)") }
+                    if !title.isEmpty && title != app { parts.append("Window: \"\(title)\"") }
+                    if let u = url, !u.isEmpty { parts.append("URL: \(u)") }
+                    if !parts.isEmpty {
+                        contextPrefix = "[Background App on Screen (Informational only — DO NOT automate or type into unless user explicitly asks): \(parts.joined(separator: " | "))]\n"
+                    }
                 }
             case .file(let name, let fileURL):
                 var fileInfo = "[Context: Attached File \"\(name)\""
@@ -448,6 +678,13 @@ final class ClaudeService {
                 contextPrefix = comp
             }
         }
+
+        // Inject active meeting knowledge cache if available
+        let meetingCacheContext = CoucouContextCache.shared.getMeetingContextInjection()
+        if !meetingCacheContext.isEmpty {
+            contextPrefix += "\(meetingCacheContext)\n"
+        }
+
         // 0. Create initial placeholder with Jev Fast-Path step in UI
         let jevStep = AssistantWorkStep(
             tool: "jev",
@@ -483,7 +720,9 @@ final class ClaudeService {
             }
             _ = await ComputerUseHarness.executeKeyCombo(combo: target)
             let answer = "Đã thực hiện phím tắt \(target.uppercased()) qua Jev/SystemOne."
-            conversationMessages.append(["role": "assistant", "content": answer])
+            let asstMsg: [String: Any] = ["role": "assistant", "content": answer]
+            conversationMessages.append(asstMsg)
+            estimatedTotalTokens += Self.estimateTokens(for: asstMsg)
             await MainActor.run {
                 if messageIndex < state.chatHistory.count {
                     if let lastIdx = state.chatHistory[messageIndex].steps.indices.last {
@@ -511,7 +750,9 @@ final class ClaudeService {
             }
             let output = await ComputerUseHarness.runBash(command: shellCmd, cwd: nil)
             let answer = output.trimmingCharacters(in: .whitespacesAndNewlines)
-            conversationMessages.append(["role": "assistant", "content": answer])
+            let asstMsg: [String: Any] = ["role": "assistant", "content": answer]
+            conversationMessages.append(asstMsg)
+            estimatedTotalTokens += Self.estimateTokens(for: asstMsg)
             await MainActor.run {
                 if messageIndex < state.chatHistory.count {
                     if let lastIdx = state.chatHistory[messageIndex].steps.indices.last {
@@ -548,8 +789,61 @@ final class ClaudeService {
         }
 
         let userText = contextPrefix.isEmpty ? query : "\(contextPrefix)\n\(query)"
-        msgs.append(["role": "user", "content": userText])
-        conversationMessages.append(["role": "user", "content": userText])
+        let userMsg: [String: Any] = ["role": "user", "content": userText]
+        conversationMessages.append(userMsg)
+        estimatedTotalTokens += Self.estimateTokens(for: userMsg)
+
+        // Auto-compact if approaching context window limit
+        compactConversationIfNeeded(provider: provider)
+
+        // Build messages payload: system prompt + (compacted) conversation history
+        var msgs: [[String: Any]] = [["role": "system", "content": systemPrompt]]
+        for m in conversationMessages {
+            var simplified = m
+            if let content = m["content"] as? [[String: Any]] {
+                let text = content.compactMap { $0["text"] as? String }.joined(separator: "\n")
+                simplified["content"] = text
+            }
+            msgs.append(simplified)
+        }
+
+        // Detect Autonomous Goal mode (/goal, /auto, or explicit autonomous intent)
+        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let isGoalPrefix = trimmedQuery.hasPrefix("/goal ") || trimmedQuery.hasPrefix("/auto ")
+        let isAutonomousPhrase = trimmedQuery.lowercased().contains("tự động làm") ||
+                                 trimmedQuery.lowercased().contains("chạy tự chủ") ||
+                                 trimmedQuery.lowercased().contains("làm đến khi xong") ||
+                                 trimmedQuery.lowercased().contains("chạy đến khi xong")
+
+        var autonomousGoal: String? = nil
+        if isGoalPrefix {
+            if trimmedQuery.hasPrefix("/goal ") {
+                autonomousGoal = String(trimmedQuery.dropFirst(6)).trimmingCharacters(in: .whitespacesAndNewlines)
+            } else if trimmedQuery.hasPrefix("/auto ") {
+                autonomousGoal = String(trimmedQuery.dropFirst(6)).trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        } else if isAutonomousPhrase {
+            autonomousGoal = trimmedQuery
+        }
+
+        if let goal = autonomousGoal, !goal.isEmpty {
+            await AutonomousAgentEngine.shared.startMission(goal: goal, state: state)
+
+            let autonomousDirective = """
+[CHẾ ĐỘ TỰ CHỦ HOÀN TOÀN - AUTONOMOUS AGENT ACTIVE]
+Mục tiêu cấp cao cần đạt: "\(goal)"
+
+QUY TẮC BẮT BUỘC DÀNH CHO AGENT TỰ CHỦ:
+1. BƯỚC 1: Gọi ngay tool `update_plan` để lập danh sách 3 đến 6 bước thực thi cụ thể.
+2. BƯỚC 2..N: Liên tục thực hiện từng bước bằng các công cụ (`web_search`, `bash`, `read_file`, `write_file`, `list_directory`...).
+   - Sau khi hoàn tất mỗi bước, gọi `update_plan` để cập nhật trạng thái bước đó sang completed và chuyển sang bước tiếp theo.
+   - Sử dụng `update_scratchpad` để lưu thông tin, đường dẫn, dữ liệu trung gian.
+3. TỰ SỬA LỖI (Self-Correction): Nếu lệnh gặp lỗi, hãy đọc kỹ thông báo, phân tích và tự thử phương án khắc phục.
+4. KIỂM CHỨNG (Verification Gate): Trước khi kết thúc, phải tự kiểm tra lại sản phẩm (ví dụ: dùng `read_file` để kiểm tra file đã ghi đủ, hoặc chạy lệnh bash để kiểm tra).
+5. KẾT THÚC: Bạn PHẢI tiếp tục chạy các tool cho đến khi toàn bộ mục tiêu ĐÃ ĐƯỢC XÁC MINH THÀNH CÔNG. CHỈ KHI và CHỈ KHI toàn bộ mục tiêu đã xong, bạn mới được gọi tool `task_complete(summary: ...)`.
+"""
+            msgs.append(["role": "system", "content": autonomousDirective])
+        }
 
         // Add thinking step for LLM reasoning
         let thinkingStep = AssistantWorkStep(tool: "thinking", title: "Đang đọc câu hỏi & suy nghĩ", detail: nil, isDone: false)
@@ -559,11 +853,27 @@ final class ClaudeService {
             }
         }
 
-        // Multi-turn tool execution loop (up to 20 iterations per complex task)
-        let maxIterations = 20
+        // Multi-turn tool execution loop (up to 50 iterations for autonomous tasks, 6 for standard interactive chat)
+        let isAutonomous = autonomousGoal != nil
+        let maxIterations = isAutonomous ? 50 : 6
         var consecutiveBrowserEvalCount = 0
         var totalTokensEstimated = 0
+
+        // Turn-level tool deduplication & anti-loop state
+        var executedToolSignatures: [String: String] = [:]
+        var webSearchCountInTurn = 0
+        var webFetchCountInTurn = 0
+        var duplicateToolCount = 0
+        var forceFinalAnswer = false
+
         for iteration in 0..<maxIterations {
+            if Task.isCancelled { break }
+
+            // Anthropic & OpenAI Agent Caching Pattern: Prune/evaporate older tool results in working memory
+            if iteration > 0 {
+                msgs = ComputerUseHarness.pruneHistoricalToolResults(in: msgs, keepRecentCount: 1)
+            }
+
             var body: [String: Any] = [
                 "model": state.activeChatModel,
                 "messages": msgs,
@@ -572,6 +882,9 @@ final class ClaudeService {
                 "stream_options": ["include_usage": true],
                 "temperature": 0.2,
             ]
+            if forceFinalAnswer {
+                body["tool_choice"] = "none"
+            }
             if provider == .openai {
                 body["reasoning_effort"] = "none"
                 body["max_completion_tokens"] = 1024
@@ -715,6 +1028,60 @@ final class ClaudeService {
                         let argsData = tc.args.data(using: .utf8) ?? Data()
                         let args = (try? JSONSerialization.jsonObject(with: argsData) as? [String: Any]) ?? [:]
 
+                        let cleanArgs = tc.args.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let sig = "\(tc.name)::\(cleanArgs)"
+
+                        // 1. Tool Call Deduplication Guard (Prevents repeated tool calls in same turn)
+                        if let prevOutput = executedToolSignatures[sig] {
+                            coucouLog("[Tool Guard] Duplicate call detected for \(tc.name). Suppressing UI step and returning previous output.")
+                            duplicateToolCount += 1
+                            forceFinalAnswer = true
+
+                            let notice = """
+                            \(prevOutput)
+
+                            [LƯU Ý HỆ THỐNG: Dữ liệu này đã được truy xuất trước đó và hoàn toàn đầy đủ. TUYỆT ĐỐI KHÔNG gọi lại công cụ này nữa. Hãy sử dụng toàn bộ thông tin trên để trả lời ngay cho người dùng.]
+                            """
+                            msgs.append([
+                                "role": "tool",
+                                "tool_call_id": toolId,
+                                "name": tc.name,
+                                "content": notice
+                            ])
+                            continue
+                        }
+
+                        // 2. Interactive / Meeting Chat Tool Budget (Max 2 searches, max 2 fetches)
+                        if !isAutonomous {
+                            if tc.name == "web_search" {
+                                webSearchCountInTurn += 1
+                                if webSearchCountInTurn > 2 {
+                                    coucouLog("[Tool Guard] Web search budget reached (2 max). Forcing final answer.")
+                                    forceFinalAnswer = true
+                                    msgs.append([
+                                        "role": "tool",
+                                        "tool_call_id": toolId,
+                                        "name": tc.name,
+                                        "content": "[ĐÃ ĐẠT GIỚI HẠN TÌM KIẾM: Đã có đủ dữ liệu từ các lần tìm kiếm trước. Hãy tổng hợp câu trả lời chi tiết cho người dùng ngay bây giờ, không gọi thêm tool.]"
+                                    ])
+                                    continue
+                                }
+                            } else if tc.name == "web_fetch" {
+                                webFetchCountInTurn += 1
+                                if webFetchCountInTurn > 2 {
+                                    coucouLog("[Tool Guard] Web fetch budget reached (2 max). Forcing final answer.")
+                                    forceFinalAnswer = true
+                                    msgs.append([
+                                        "role": "tool",
+                                        "tool_call_id": toolId,
+                                        "name": tc.name,
+                                        "content": "[ĐÃ ĐẠT GIỚI HẠN ĐỌC TRANG WEB: Đã thu thập đủ nội dung. Hãy tổng hợp câu trả lời chi tiết cho người dùng ngay bây giờ, không gọi thêm tool.]"
+                                    ])
+                                    continue
+                                }
+                            }
+                        }
+
                         let parsed = self.parseToolStep(name: tc.name, argsString: tc.args)
                         let step = AssistantWorkStep(tool: tc.name, title: parsed.title, detail: parsed.detail, isDone: false)
 
@@ -726,12 +1093,13 @@ final class ClaudeService {
                                 }
                                 state.chatHistory[messageIndex].steps.append(step)
                             }
-                            NotificationCenter.default.post(name: .triggerEmote, object: BotEmote.wink)
                         }
 
                         coucouLog("[Agent Step] Executing tool: \(tc.name) args: \(tc.args.prefix(200))")
                         let output = await ComputerUseHarness.execute(name: tc.name, arguments: args)
                         coucouLog("[Agent Step] Tool '\(tc.name)' result: \(output.prefix(200))")
+
+                        executedToolSignatures[sig] = output
 
                         await MainActor.run {
                             if messageIndex < state.chatHistory.count,
@@ -746,6 +1114,11 @@ final class ClaudeService {
                             "name": tc.name,
                             "content": output
                         ])
+                    }
+
+                    // In non-autonomous mode, after 2 iterations with tools, force final answer next round
+                    if !isAutonomous && iteration >= 2 {
+                        forceFinalAnswer = true
                     }
 
                     // Rescue if model is stuck in a browser_eval loop
@@ -763,9 +1136,54 @@ final class ClaudeService {
                     continue
                 }
 
+                // Check if autonomous mission is running and not yet verified as completed
+                let isMissionRunning = await MainActor.run {
+                    AutonomousAgentEngine.shared.isRunning && !(AutonomousAgentEngine.shared.currentMission?.isCompleted ?? true)
+                }
+
+                if isMissionRunning {
+                    let trimmed = accumulatedContent.trimmingCharacters(in: .whitespacesAndNewlines)
+                    coucouLog("[Autonomous Loop] Interim reflection at step \(iteration + 1): \(trimmed.prefix(60)). Prompting continuation...")
+
+                    let asstMsg: [String: Any] = ["role": "assistant", "content": trimmed]
+                    msgs.append(asstMsg)
+
+                    await MainActor.run {
+                        if messageIndex < state.chatHistory.count {
+                            state.chatHistory[messageIndex].content = trimmed
+                        }
+                    }
+
+                    let goalText = await MainActor.run {
+                        AutonomousAgentEngine.shared.currentMission?.goal ?? (autonomousGoal ?? "")
+                    }
+
+                    let stepInfo = await MainActor.run {
+                        if let mission = AutonomousAgentEngine.shared.currentMission {
+                            let stepName = mission.steps.indices.contains(mission.currentStepIndex) ? mission.steps[mission.currentStepIndex].title : ""
+                            return "Bước hiện tại: \(mission.currentStepIndex + 1)/\(mission.steps.count) (\(stepName))."
+                        }
+                        return ""
+                    }
+
+                    msgs.append([
+                        "role": "user",
+                        "content": "[Tiến trình tự chủ - Lượt \(iteration + 1)] Mục tiêu: \"\(goalText)\". \(stepInfo) Nhiệm vụ chưa hoàn tất vì tool `task_complete` chưa được gọi. Hãy tiếp tục thực thi bước tiếp theo bằng các công cụ (web_search, bash, write_file, read_file...). Cập nhật tiến độ bằng `update_plan`. Chỉ gọi `task_complete` khi mục tiêu đã được hoàn tất và kiểm chứng thành công."
+                    ])
+
+                    accumulatedContent = ""
+                    continue
+                }
+
                 // Final answer text completed
                 let trimmed = accumulatedContent.trimmingCharacters(in: .whitespacesAndNewlines)
-                conversationMessages.append(["role": "assistant", "content": trimmed])
+                let asstMsg: [String: Any] = ["role": "assistant", "content": trimmed]
+                conversationMessages.append(asstMsg)
+                if totalTokensEstimated > 0 {
+                    estimatedTotalTokens = totalTokensEstimated
+                } else {
+                    estimatedTotalTokens += Self.estimateTokens(for: asstMsg)
+                }
                 await MainActor.run {
                     if messageIndex < state.chatHistory.count {
                         state.chatHistory[messageIndex].content = trimmed
@@ -794,7 +1212,8 @@ final class ClaudeService {
             } catch {
                 coucouLog("[Agent Error] \(error.localizedDescription)")
                 if !conversationMessages.isEmpty {
-                    conversationMessages.removeLast()
+                    let removed = conversationMessages.removeLast()
+                    estimatedTotalTokens = max(0, estimatedTotalTokens - Self.estimateTokens(for: removed))
                 }
                 await MainActor.run {
                     if messageIndex < state.chatHistory.count {
@@ -810,8 +1229,13 @@ final class ClaudeService {
         // reset the UI to prevent permanent hang ("Đang suy nghĩ..." stuck forever).
         let exhaustedMsg = "Coucou đã thực hiện \(maxIterations) bước nhưng chưa hoàn tất được yêu cầu. Thử lại với mô tả cụ thể hơn nhé."
         coucouLog("[Agent Loop] Exhausted \(maxIterations) steps without completing request.")
-        conversationMessages.append(["role": "assistant", "content": exhaustedMsg])
+        let exhaustedAsstMsg: [String: Any] = ["role": "assistant", "content": exhaustedMsg]
+        conversationMessages.append(exhaustedAsstMsg)
+        estimatedTotalTokens += Self.estimateTokens(for: exhaustedAsstMsg)
         await MainActor.run {
+            if AutonomousAgentEngine.shared.isRunning {
+                AutonomousAgentEngine.shared.stopMission(state: state)
+            }
             if messageIndex < state.chatHistory.count {
                 state.chatHistory[messageIndex].content = exhaustedMsg
                 state.chatHistory[messageIndex].isRunning = false
@@ -940,7 +1364,9 @@ final class ClaudeService {
         }
 
         // Store full content (includes tool_use/tool_result blocks) for correct multi-turn context
-        conversationMessages.append(["role": "assistant", "content": content])
+        let asstMsg: [String: Any] = ["role": "assistant", "content": content]
+        conversationMessages.append(asstMsg)
+        estimatedTotalTokens += Self.estimateTokens(for: asstMsg)
 
         guard let textBlock = content.first(where: { $0["type"] as? String == "text" }),
               let text = textBlock["text"] as? String, !text.isEmpty else {
@@ -1045,6 +1471,105 @@ final class ClaudeService {
 enum ComputerUseHarness {
 
     nonisolated(unsafe) static let openAIToolDefinitions: [[String: Any]] = [
+        [
+            "type": "function",
+            "function": [
+                "name": "update_plan",
+                "description": "Create or update the step-by-step checklist plan for an autonomous mission. Always use this to break complex goals into 3-6 clear sub-tasks, and update current_step_index and completed_step_indices as you progress.",
+                "parameters": [
+                    "type": "object",
+                    "properties": [
+                        "steps": [
+                            "type": "array",
+                            "items": ["type": "string"],
+                            "description": "Array of ordered plan steps (e.g. ['1. Tìm kiếm tài liệu', '2. Viết file mã nguồn', '3. Chạy test', '4. Kiểm tra kết quả'])"
+                        ],
+                        "current_step_index": [
+                            "type": "integer",
+                            "description": "The 0-based index of the step currently being executed"
+                        ],
+                        "completed_step_indices": [
+                            "type": "array",
+                            "items": ["type": "integer"],
+                            "description": "Optional list of step indices that have been successfully finished"
+                        ]
+                    ],
+                    "required": ["steps", "current_step_index"]
+                ]
+            ]
+        ],
+        [
+            "type": "function",
+            "function": [
+                "name": "task_complete",
+                "description": "Declare that the autonomous mission is COMPLETELY FINISHED and verified. Calling this concludes the autonomous loop and presents the final deliverables to the user.",
+                "parameters": [
+                    "type": "object",
+                    "properties": [
+                        "summary": [
+                            "type": "string",
+                            "description": "Comprehensive summary of the accomplished goal, created files, test outputs, or findings"
+                        ]
+                    ],
+                    "required": ["summary"]
+                ]
+            ]
+        ],
+        [
+            "type": "function",
+            "function": [
+                "name": "update_scratchpad",
+                "description": "Save critical notes, file paths, URLs, or data into your persistent working memory across autonomous iterations.",
+                "parameters": [
+                    "type": "object",
+                    "properties": [
+                        "notes": [
+                            "type": "string",
+                            "description": "The scratchpad working notes to retain"
+                        ]
+                    ],
+                    "required": ["notes"]
+                ]
+            ]
+        ],
+        [
+            "type": "function",
+            "function": [
+                "name": "web_search",
+                "description": "Search the live web in real-time on DuckDuckGo / Google to get current market prices (gold, bitcoin, stocks, foreign currency), weather, news, events, documentation, and answers. Returns top search results with titles, source URLs, and concise snippets.",
+                "parameters": [
+                    "type": "object",
+                    "properties": [
+                        "query": [
+                            "type": "string",
+                            "description": "Keywords to search for (e.g. 'giá vàng hôm nay', 'thời tiết Hà Nội', 'AAPL stock price', 'tin tức mới nhất')"
+                        ],
+                        "max_results": [
+                            "type": "integer",
+                            "description": "Optional maximum number of search results to return (default: 5, max: 10)"
+                        ]
+                    ],
+                    "required": ["query"]
+                ]
+            ]
+        ],
+        [
+            "type": "function",
+            "function": [
+                "name": "web_fetch",
+                "description": "Fetch and read the full text content of a webpage by URL. Use this to read articles, documentation, or news details discovered from web_search.",
+                "parameters": [
+                    "type": "object",
+                    "properties": [
+                        "url": [
+                            "type": "string",
+                            "description": "The URL of the webpage to fetch"
+                        ]
+                    ],
+                    "required": ["url"]
+                ]
+            ]
+        ],
         [
             "type": "function",
             "function": [
@@ -1257,6 +1782,30 @@ enum ComputerUseHarness {
         [
             "type": "function",
             "function": [
+                "name": "browser_cycle_tabs",
+                "description": "Quickly switch/browse through all open tabs in the browser (Google Chrome, Arc, Safari) one by one with a configurable pause and smooth scroll on each tab. Use when the user asks to 'lướt qua các tab', 'lướt để tôi đọc', 'cycle tabs', 'show all tabs'. Executes smoothly in a single action without needing multiple API turns.",
+                "parameters": [
+                    "type": "object",
+                    "properties": [
+                        "delay_seconds": [
+                            "type": "number",
+                            "description": "Seconds to stay on each tab before switching to next (default: 1.5, min: 0.5, max: 4.0)"
+                        ],
+                        "scroll_down": [
+                            "type": "boolean",
+                            "description": "Whether to smoothly scroll each page down so user can read content (default: true)"
+                        ],
+                        "app_name": [
+                            "type": "string",
+                            "description": "Browser name (defaults to 'Google Chrome' or active browser)"
+                        ]
+                    ]
+                ]
+            ]
+        ],
+        [
+            "type": "function",
+            "function": [
                 "name": "browser_get_content",
                 "description": "Read the on-screen visible content or text from the frontmost or active browser tab via Vision OCR and metadata.",
                 "parameters": [
@@ -1313,6 +1862,29 @@ enum ComputerUseHarness {
 
     static func execute(name: String, arguments: [String: Any]) async -> String {
         switch name {
+        case "update_plan":
+            let steps = (arguments["steps"] as? [String]) ?? []
+            let currIdx = (arguments["current_step_index"] as? NSNumber)?.intValue ?? (arguments["current_step_index"] as? Int) ?? 0
+            let compIdx = (arguments["completed_step_indices"] as? [NSNumber])?.map { $0.intValue } ?? (arguments["completed_step_indices"] as? [Int]) ?? []
+            return await AutonomousAgentEngine.shared.updatePlan(steps: steps, currentStepIndex: currIdx, completedIndices: compIdx)
+
+        case "task_complete":
+            let summary = arguments["summary"] as? String ?? "Nhiệm vụ đã hoàn tất."
+            return await AutonomousAgentEngine.shared.completeMission(summary: summary)
+
+        case "update_scratchpad":
+            let notes = arguments["notes"] as? String ?? ""
+            return await AutonomousAgentEngine.shared.updateScratchpad(notes: notes)
+
+        case "web_search":
+            let q = (arguments["query"] as? String) ?? (arguments["q"] as? String) ?? ""
+            let maxResults = (arguments["max_results"] as? NSNumber)?.intValue ?? (arguments["max_results"] as? Int) ?? 5
+            return await executeWebSearch(query: q, maxResults: maxResults)
+
+        case "web_fetch":
+            let targetUrl = (arguments["url"] as? String) ?? (arguments["target"] as? String) ?? ""
+            return await executeWebFetch(urlStr: targetUrl)
+
         case "bash":
             let cmd = arguments["command"] as? String ?? ""
             let cwd = arguments["cwd"] as? String
@@ -1348,6 +1920,12 @@ enum ComputerUseHarness {
         case "browser_list_tabs":
             return await listAllBrowserTabs()
 
+        case "browser_cycle_tabs":
+            let delay = (arguments["delay_seconds"] as? NSNumber)?.doubleValue ?? 1.5
+            let scroll = (arguments["scroll_down"] as? Bool) ?? true
+            let app = arguments["app_name"] as? String
+            return await cycleAllBrowserTabs(delaySeconds: delay, scrollDown: scroll, appName: app)
+
         case "browser_get_content":
             let keyword = arguments["tab_keyword"] as? String
             return await getBrowserTabContent(tabKeyword: keyword)
@@ -1380,6 +1958,211 @@ enum ComputerUseHarness {
         default:
             return "Unknown tool: \(name)"
         }
+    }
+
+    // MARK: - Native Web Search & Web Fetch
+
+    static func executeWebSearch(query: String, maxResults: Int = 5) async -> String {
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !q.isEmpty else { return "Lỗi: Nội dung tìm kiếm trống." }
+
+        // 0. High-performance Context Cache Check (0ms response)
+        if let cached = CoucouContextCache.shared.getSearch(query: q) {
+            return cached
+        }
+
+        // 1. DuckDuckGo Real-time HTML POST Search (live web results)
+        if let ddgResults = await performDuckDuckGoSearch(query: q, maxResults: maxResults), !ddgResults.isEmpty {
+            CoucouContextCache.shared.putSearch(query: q, content: ddgResults)
+            return ddgResults
+        }
+
+        // 2. Fallback: DuckDuckGo Instant Answer API
+        if let instantAnswer = await performDuckDuckGoInstantAnswer(query: q), !instantAnswer.isEmpty {
+            CoucouContextCache.shared.putSearch(query: q, content: instantAnswer)
+            return instantAnswer
+        }
+
+        // 3. Fallback: Wikipedia Summary API (for facts, concepts, entities)
+        if let wikiResult = await performWikipediaSearch(query: q), !wikiResult.isEmpty {
+            CoucouContextCache.shared.putSearch(query: q, content: wikiResult)
+            return wikiResult
+        }
+
+        return "Không tìm thấy kết quả trực tiếp cho '\(q)'. Bạn có thể thử từ khóa cụ thể hơn hoặc dùng browser_open để mở trang tìm kiếm trong trình duyệt."
+    }
+
+    static func performDuckDuckGoSearch(query: String, maxResults: Int) async -> String? {
+        guard let url = URL(string: "https://html.duckduckgo.com/html/") else { return nil }
+        var request = URLRequest(url: url, timeoutInterval: 8)
+        request.httpMethod = "POST"
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", forHTTPHeaderField: "User-Agent")
+
+        var components = URLComponents()
+        components.queryItems = [URLQueryItem(name: "q", value: query)]
+        let postDataString = components.percentEncodedQuery ?? "q=\(query)"
+        request.httpBody = postDataString.data(using: .utf8)
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200,
+                  let htmlString = String(data: data, encoding: .utf8) else {
+                return nil
+            }
+
+            let pattern = #"<a[^>]*class=\"result__a\"[^>]*href=\"([^\"]*)\"[^>]*>(.*?)</a>[\s\S]*?<a[^>]*class=\"result__snippet\"[^>]*>(.*?)</a>"#
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else { return nil }
+
+            let nsString = htmlString as NSString
+            let matches = regex.matches(in: htmlString, options: [], range: NSRange(location: 0, length: nsString.length))
+
+            var formatted: [String] = []
+            for (idx, match) in matches.prefix(max(1, min(maxResults, 10))).enumerated() {
+                var rawUrl = nsString.substring(with: match.range(at: 1))
+                let rawTitle = nsString.substring(with: match.range(at: 2))
+                let rawSnippet = nsString.substring(with: match.range(at: 3))
+
+                if rawUrl.contains("uddg="), let comp = URLComponents(string: rawUrl),
+                   let realUrl = comp.queryItems?.first(where: { $0.name == "uddg" })?.value {
+                    rawUrl = realUrl
+                }
+
+                let cleanTitle = stripHTML(rawTitle)
+                let cleanSnippet = stripHTML(rawSnippet)
+
+                if !cleanTitle.isEmpty {
+                    formatted.append("\(idx + 1). \(cleanTitle)\n   Nguồn: \(rawUrl)\n   Tóm tắt: \(cleanSnippet)")
+                }
+            }
+
+            if !formatted.isEmpty {
+                return "[Kết quả tìm kiếm trực tiếp trên Web cho: \"\(query)\"]\n\n" + formatted.joined(separator: "\n\n")
+            }
+        } catch {
+            coucouLog("[WebSearch] DuckDuckGo error: \(error)")
+        }
+        return nil
+    }
+
+    static func performDuckDuckGoInstantAnswer(query: String) async -> String? {
+        guard let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+              let url = URL(string: "https://api.duckduckgo.com/?q=\(encoded)&format=json&no_html=1&skip_disambig=1") else {
+            return nil
+        }
+        var request = URLRequest(url: url, timeoutInterval: 5)
+        request.setValue("Coucou/1.0", forHTTPHeaderField: "User-Agent")
+
+        if let (data, resp) = try? await URLSession.shared.data(for: request),
+           let http = resp as? HTTPURLResponse, http.statusCode == 200,
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            var parts: [String] = []
+            if let abstract = json["AbstractText"] as? String, !abstract.isEmpty {
+                let src = json["AbstractSource"] as? String ?? "Web"
+                parts.append("Tóm tắt (\(src)): \(abstract)")
+            }
+            if let answer = json["Answer"] as? String, !answer.isEmpty {
+                parts.append("Trả lời nhanh: \(answer)")
+            }
+            if !parts.isEmpty {
+                return "[DuckDuckGo Quick Answer cho: \"\(query)\"]\n" + parts.joined(separator: "\n")
+            }
+        }
+        return nil
+    }
+
+    static func performWikipediaSearch(query: String) async -> String? {
+        let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? query
+        guard let url = URL(string: "https://vi.wikipedia.org/api/rest_v1/page/summary/\(encoded)") else { return nil }
+        var request = URLRequest(url: url, timeoutInterval: 5)
+        request.setValue("Coucou/1.0", forHTTPHeaderField: "User-Agent")
+
+        if let (data, resp) = try? await URLSession.shared.data(for: request),
+           let http = resp as? HTTPURLResponse, http.statusCode == 200,
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let extract = json["extract"] as? String, !extract.isEmpty {
+            let title = json["title"] as? String ?? query
+            return "[Thông tin tra cứu Wikipedia cho \"\(title)\"]\n\(extract)"
+        }
+        return nil
+    }
+
+    static func executeWebFetch(urlStr: String, maxChars: Int = 4000) async -> String {
+        let trimmed = urlStr.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: trimmed), let scheme = url.scheme, scheme.hasPrefix("http") else {
+            return "Lỗi: URL không hợp lệ (\(trimmed))."
+        }
+
+        // 0. High-performance WebFetch Cache Check (0ms response)
+        if let cached = CoucouContextCache.shared.getWebFetch(url: trimmed) {
+            return cached
+        }
+
+        var request = URLRequest(url: url, timeoutInterval: 12)
+        request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", forHTTPHeaderField: "User-Agent")
+        request.setValue("text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8", forHTTPHeaderField: "Accept")
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+                let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+                return "Lỗi tải trang web (HTTP \(code))."
+            }
+
+            guard var html = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .ascii) else {
+                return "Không thể đọc nội dung văn bản từ trang web."
+            }
+
+            html = html.replacingOccurrences(of: "(?s)<script.*?</script>", with: "", options: .regularExpression)
+            html = html.replacingOccurrences(of: "(?s)<style.*?</style>", with: "", options: .regularExpression)
+            html = html.replacingOccurrences(of: "(?s)<nav.*?</nav>", with: "", options: .regularExpression)
+            html = html.replacingOccurrences(of: "(?s)<footer.*?</footer>", with: "", options: .regularExpression)
+            html = html.replacingOccurrences(of: "<br\\s*/?>", with: "\n", options: .regularExpression)
+            html = html.replacingOccurrences(of: "</?(p|div|h[1-6]|li)[^>]*>", with: "\n", options: .regularExpression)
+
+            let clean = stripHTML(html)
+            let lines = clean.components(separatedBy: .newlines)
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+            let body = lines.joined(separator: "\n")
+            let preview = String(body.prefix(maxChars))
+
+            CoucouContextCache.shared.putWebFetch(url: trimmed, content: preview)
+            return preview
+        } catch {
+            return "Lỗi kết nối khi tải trang: \(error.localizedDescription)"
+        }
+    }
+
+    static func stripHTML(_ string: String) -> String {
+        var str = string.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+        str = str.replacingOccurrences(of: "&quot;", with: "\"")
+        str = str.replacingOccurrences(of: "&#39;", with: "'")
+        str = str.replacingOccurrences(of: "&amp;", with: "&")
+        str = str.replacingOccurrences(of: "&lt;", with: "<")
+        str = str.replacingOccurrences(of: "&gt;", with: ">")
+        str = str.replacingOccurrences(of: "&nbsp;", with: " ")
+        return str.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    // MARK: - Agent Working Memory & Tool Result Evaporation (Anthropic/OpenAI Architecture)
+
+    /// Prunes/evaporates older tool outputs in multi-turn agent history to preserve working memory.
+    /// Following Anthropic's "Building effective agents" guideline, raw outputs from earlier tool turns
+    /// are condensed after the model has processed them, keeping only the most recent output unpruned.
+    static func pruneHistoricalToolResults(in messages: [[String: Any]], keepRecentCount: Int = 1) -> [[String: Any]] {
+        var pruned = messages
+        let toolIndices = pruned.indices.filter { (pruned[$0]["role"] as? String) == "tool" }
+        guard toolIndices.count > keepRecentCount else { return pruned }
+
+        let indicesToCondense = toolIndices.dropLast(keepRecentCount)
+        for idx in indicesToCondense {
+            if let content = pruned[idx]["content"] as? String, content.count > 1000 {
+                let condensed = String(content.prefix(600)) + "\n... [Đã thu gọn kết quả công cụ cũ để tối ưu bộ nhớ làm việc của Agent] ..."
+                pruned[idx]["content"] = condensed
+            }
+        }
+        return pruned
     }
 
     static func runBash(command: String, cwd: String?, timeout: TimeInterval = 45) async -> String {
@@ -1581,6 +2364,23 @@ enum ComputerUseHarness {
                     if let res = NSAppleScript(source: script)?.executeAndReturnError(&err).stringValue {
                         lines.append("Browser URL: \(res)")
                     }
+
+                    // Fast page excerpt extraction (top 2000 chars) so LLM knows what is on screen without extra tool calls
+                    let previewScript: String
+                    if bundleId == "com.apple.Safari" {
+                        previewScript = "tell application \"Safari\" to do JavaScript \"document.body ? document.body.innerText.slice(0, 2000) : ''\" in current tab of front window"
+                    } else {
+                        let bName = targetApp?.localizedName ?? "Google Chrome"
+                        previewScript = "tell application \"\(bName)\" to execute active tab of front window javascript \"document.body ? document.body.innerText.slice(0, 2000) : ''\""
+                    }
+                    if let pageText = NSAppleScript(source: previewScript)?.executeAndReturnError(&err).stringValue, !pageText.isEmpty {
+                        let cleanText = pageText.components(separatedBy: .newlines)
+                            .map { $0.trimmingCharacters(in: .whitespaces) }
+                            .filter { !$0.isEmpty }
+                            .prefix(35)
+                            .joined(separator: "\n")
+                        lines.append("Browser Visible Text (Excerpt):\n\(cleanText)")
+                    }
                 }
 
                 // Terminal / iTerm2 extraction
@@ -1599,6 +2399,18 @@ enum ComputerUseHarness {
                 }
             }
 
+            let isBrowser = targetApp?.bundleIdentifier?.contains("Chrome") == true
+                || targetApp?.bundleIdentifier?.contains("Safari") == true
+                || targetApp?.bundleIdentifier?.contains("Arc") == true
+                || targetApp?.bundleIdentifier?.contains("Brave") == true
+                || targetApp?.bundleIdentifier?.contains("Edge") == true
+
+            // For browsers, URL and visible text excerpt are already extracted via fast AppleScript (sub-30ms).
+            // Skip slow mdfind, AX tree traversal, and screencapture OCR.
+            if isBrowser {
+                return lines.joined(separator: "\n")
+            }
+
             // 3. Code Editor / IDE File detection from window title
             let titleTokens = detectedTitle.components(separatedBy: CharacterSet(charactersIn: " —-·|:"))
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -1612,8 +2424,13 @@ enum ComputerUseHarness {
                     findTask.arguments = ["-name", token]
                     let pipe = Pipe()
                     findTask.standardOutput = pipe
+                    let pTimer = DispatchSource.makeTimerSource(queue: .global())
+                    pTimer.schedule(deadline: .now() + 0.8)
+                    pTimer.setEventHandler { if findTask.isRunning { findTask.terminate() } }
+                    pTimer.resume()
                     try? findTask.run()
                     findTask.waitUntilExit()
+                    pTimer.cancel()
                     let data = pipe.fileHandleForReading.readDataToEndOfFile()
                     if let out = String(data: data, encoding: .utf8) {
                         let foundPaths = out.components(separatedBy: "\n").filter { $0.hasSuffix(token) }
@@ -1736,9 +2553,8 @@ enum ComputerUseHarness {
                 if let img = NSImage(contentsOf: URL(fileURLWithPath: tmpImg)),
                    let cgImg = img.cgImage(forProposedRect: nil, context: nil, hints: nil) {
                     let req = VNRecognizeTextRequest()
-                    req.recognitionLevel = .accurate
-                    req.usesLanguageCorrection = true
-                    req.recognitionLanguages = ["en-US", "vi-VN"]
+                    req.recognitionLevel = .fast
+                    req.usesLanguageCorrection = false
                     let handler = VNImageRequestHandler(cgImage: cgImg, options: [:])
                     try? handler.perform([req])
 
@@ -1826,6 +2642,12 @@ enum ComputerUseHarness {
     }
 
     nonisolated static func performHardwareClick(at pt: CGPoint, isRight: Bool = false, label: String? = nil) -> String {
+        guard AXIsProcessTrusted() else {
+            let desc = label.map { "'\($0)'" } ?? "tại (\(Int(pt.x)), \(Int(pt.y)))"
+            coucouLog("[Hardware Click] BLOCKED: Coucou does not have macOS Accessibility permissions to click \(desc).")
+            return "Lỗi quyền macOS: Coucou chưa được cấp quyền Trợ năng (Accessibility) để điều khiển chuột click vào ứng dụng khác. Vui lòng mở Cài đặt hệ thống > Quyền riêng tư & Bảo mật > Trợ năng và cấp quyền cho Coucou."
+        }
+
         let source = CGEventSource(stateID: .combinedSessionState)
         CGWarpMouseCursorPosition(pt)
         if let move = CGEvent(mouseEventSource: source, mouseType: .mouseMoved, mouseCursorPosition: pt, mouseButton: .left) {
@@ -1865,6 +2687,11 @@ enum ComputerUseHarness {
     }
 
     nonisolated static func performHardwareDoubleClick(at pt: CGPoint) -> String {
+        guard AXIsProcessTrusted() else {
+            coucouLog("[Hardware Click] BLOCKED: Coucou does not have macOS Accessibility permissions for double click.")
+            return "Lỗi quyền macOS: Coucou chưa được cấp quyền Trợ năng (Accessibility) để điều khiển chuột vào ứng dụng khác."
+        }
+
         let source = CGEventSource(stateID: .combinedSessionState)
         CGWarpMouseCursorPosition(pt)
         if let move = CGEvent(mouseEventSource: source, mouseType: .mouseMoved, mouseCursorPosition: pt, mouseButton: .left) {
@@ -1927,6 +2754,24 @@ enum ComputerUseHarness {
             NSAppleScript(source: asScript)?.executeAndReturnError(nil)
             usleep(150_000)
 
+            let lowerTitle = cleanTitle.lowercased()
+            let lowerName = name.lowercased()
+
+            // SMART FOCUS FOR CHAT INPUTS:
+            // When user or agent tries to focus "chat" / "ô chat" in Antigravity IDE, Cursor, VS Code:
+            // "Chat" text on screen is just the tab header at top, which does NOT focus the input field.
+            // The universal shortcut to focus the chat prompt input is Cmd+L!
+            if (lowerTitle == "chat" || lowerTitle == "ô chat" || lowerTitle == "khung chat" || lowerTitle == "chat input" || lowerTitle == "input" || lowerTitle == "continue..." || lowerTitle.contains("ô chat") || lowerTitle.contains("khung chat")) &&
+               (lowerName.contains("antigravity") || lowerName.contains("code") || lowerName.contains("cursor")) {
+                let res = await executeKeyCombo(combo: "cmd+l")
+                if !res.contains("Lỗi") {
+                    coucouLog("[pressUIElement] Focused chat input in \(name) via Cmd+L shortcut.")
+                    return "Đã focus vào ô nhập chat trong \(name) (thông qua phím tắt Cmd+L)."
+                } else {
+                    return res
+                }
+            }
+
             // Fast browser DOM click attempt if target is a web browser (Chrome, Arc, Brave, Safari, Edge)
             var browserDomClicked = false
             let bundleId = app.bundleIdentifier ?? ""
@@ -1953,7 +2798,17 @@ enum ComputerUseHarness {
                     if (el) {
                         el.scrollIntoView({behavior: 'instant', block: 'center', inline: 'center'});
                         el.focus();
+                        const opts = { bubbles: true, cancelable: true, view: window };
+                        el.dispatchEvent(new PointerEvent('pointerdown', opts));
+                        el.dispatchEvent(new MouseEvent('mousedown', opts));
+                        el.dispatchEvent(new PointerEvent('pointerup', opts));
+                        el.dispatchEvent(new MouseEvent('mouseup', opts));
                         el.click();
+                        const anchor = el.closest('a') || (el.tagName === 'A' ? el : null);
+                        if (anchor && anchor.href && !anchor.href.startsWith('javascript:void')) {
+                            anchor.dispatchEvent(new MouseEvent('click', opts));
+                            anchor.click();
+                        }
                         return "SUCCESS";
                     }
                     return "NOT_FOUND";
@@ -1968,8 +2823,9 @@ enum ComputerUseHarness {
                 var err: NSDictionary?
                 let res = NSAppleScript(source: script)?.executeAndReturnError(&err).stringValue
                 if res == "SUCCESS" {
-                    browserDomClicked = true
                     coucouLog("[pressUIElement] Clicked '\(cleanTitle)' in \(name) via browser DOM injection.")
+                    usleep(350_000) // 350ms for SPA router / navigation transition
+                    return "Successfully clicked '\(cleanTitle)' in \(name) via browser DOM."
                 }
             }
 
@@ -2117,31 +2973,127 @@ enum ComputerUseHarness {
 
     static func executeKeyCombo(combo: String) async -> String {
         return await MainActor.run { () -> String in
+            guard AXIsProcessTrusted() else {
+                coucouLog("[KeyCombo] BLOCKED: Coucou does not have macOS Accessibility permissions to send '\(combo)'.")
+                return "Lỗi quyền macOS: Coucou chưa được cấp quyền Trợ năng (Accessibility) để gửi phím '\(combo)' vào ứng dụng khác. Hãy mở Cài đặt hệ thống > Quyền riêng tư & Bảo mật > Trợ năng và cấp quyền cho Coucou."
+            }
+
             let parts = combo.lowercased().split(separator: "+").map { String($0).trimmingCharacters(in: .whitespaces) }
             guard !parts.isEmpty else { return "Invalid key combo" }
             let key = parts.last!
             let modifiers = parts.dropLast()
 
+            var flags: CGEventFlags = []
+            if modifiers.contains("cmd") || modifiers.contains("command") { flags.insert(.maskCommand) }
+            if modifiers.contains("shift") { flags.insert(.maskShift) }
+            if modifiers.contains("option") || modifiers.contains("alt") { flags.insert(.maskAlternate) }
+            if modifiers.contains("control") || modifiers.contains("ctrl") { flags.insert(.maskControl) }
+
+            let virtualKey: CGKeyCode? = {
+                switch key {
+                case "return", "enter": return 36
+                case "tab": return 48
+                case "space": return 49
+                case "delete", "backspace": return 51
+                case "escape", "esc": return 53
+                case "command", "cmd": return 55
+                case "shift": return 56
+                case "option", "alt": return 58
+                case "control", "ctrl": return 59
+                case "up": return 126
+                case "down": return 125
+                case "left": return 123
+                case "right": return 124
+                case "a": return 0
+                case "s": return 1
+                case "d": return 2
+                case "f": return 3
+                case "h": return 4
+                case "g": return 5
+                case "z": return 6
+                case "x": return 7
+                case "c": return 8
+                case "v": return 9
+                case "b": return 11
+                case "q": return 12
+                case "w": return 13
+                case "e": return 14
+                case "r": return 15
+                case "y": return 16
+                case "t": return 17
+                case "1": return 18
+                case "2": return 19
+                case "3": return 20
+                case "4": return 21
+                case "6": return 22
+                case "5": return 23
+                case "equal", "=": return 24
+                case "9": return 25
+                case "7": return 26
+                case "minus", "-": return 27
+                case "8": return 28
+                case "0": return 29
+                case "o": return 31
+                case "u": return 32
+                case "i": return 34
+                case "p": return 35
+                case "l": return 37
+                case "j": return 38
+                case "k": return 40
+                case "n": return 45
+                case "m": return 46
+                default: return nil
+                }
+            }()
+
+            // 1. Direct hardware CGEvent keystroke (Requires Accessibility AXIsProcessTrusted, works for ALL apps without System Events!)
+            if let vk = virtualKey {
+                let source = CGEventSource(stateID: .combinedSessionState)
+                let down = CGEvent(keyboardEventSource: source, virtualKey: vk, keyDown: true)
+                down?.flags = flags
+                let up = CGEvent(keyboardEventSource: source, virtualKey: vk, keyDown: false)
+                up?.flags = flags
+                down?.post(tap: .cgSessionEventTap)
+                down?.post(tap: .cghidEventTap)
+                up?.post(tap: .cgSessionEventTap)
+                up?.post(tap: .cghidEventTap)
+
+                // If target is browser and key is enter, also dispatch DOM event to guarantee Discord/web chat submits
+                if (key == "return" || key == "enter"),
+                   let front = NSWorkspace.shared.frontmostApplication,
+                   let bName = front.localizedName,
+                   ["Google Chrome", "Arc", "Brave Browser", "Microsoft Edge", "Safari"].contains(bName) {
+                    let js = """
+                    (() => {
+                        const el = document.activeElement;
+                        if (el) {
+                            const opts = {key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true};
+                            el.dispatchEvent(new KeyboardEvent('keydown', opts));
+                            el.dispatchEvent(new KeyboardEvent('keypress', opts));
+                            el.dispatchEvent(new KeyboardEvent('keyup', opts));
+                            return 'DOM Enter dispatched';
+                        }
+                        return 'No active element';
+                    })()
+                    """
+                    let escaped = js.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
+                    let domScript = "tell application \"\(bName)\" to execute active tab of front window javascript \"\(escaped)\""
+                    var domErr: NSDictionary?
+                    _ = NSAppleScript(source: domScript)?.executeAndReturnError(&domErr)
+                }
+
+                coucouLog("[KeyCombo] Dispatched CGEvent for combo: \(combo) (vk: \(vk))")
+                return "Successfully executed keyboard shortcut: \(combo)"
+            }
+
+            // Fallback for uncommon characters
             var usingParts: [String] = []
             if modifiers.contains("cmd") || modifiers.contains("command") { usingParts.append("command down") }
             if modifiers.contains("shift") { usingParts.append("shift down") }
             if modifiers.contains("option") || modifiers.contains("alt") { usingParts.append("option down") }
             if modifiers.contains("control") || modifiers.contains("ctrl") { usingParts.append("control down") }
-
             let usingClause = usingParts.isEmpty ? "" : " using {\(usingParts.joined(separator: ", "))}"
-            let script: String
-            if key == "space" {
-                script = "tell application \"System Events\" to key code 49\(usingClause)"
-            } else if key == "return" || key == "enter" {
-                script = "tell application \"System Events\" to key code 36\(usingClause)"
-            } else if key == "tab" {
-                script = "tell application \"System Events\" to key code 48\(usingClause)"
-            } else if key == "escape" || key == "esc" {
-                script = "tell application \"System Events\" to key code 53\(usingClause)"
-            } else {
-                script = "tell application \"System Events\" to keystroke \"\(key)\"\(usingClause)"
-            }
-
+            let script = "tell application \"System Events\" to keystroke \"\(key)\"\(usingClause)"
             var err: NSDictionary?
             NSAppleScript(source: script)?.executeAndReturnError(&err)
             if let err {
@@ -2251,6 +3203,62 @@ enum ComputerUseHarness {
         }
     }
 
+    static func cycleAllBrowserTabs(delaySeconds: Double = 1.5, scrollDown: Bool = true, appName: String? = nil) async -> String {
+        return await Task.detached(priority: .userInitiated) { () -> String in
+            let delay = max(0.5, min(4.0, delaySeconds))
+            let workspace = NSWorkspace.shared
+            let isSafari = appName?.localizedCaseInsensitiveContains("Safari") == true
+                || (appName == nil && workspace.frontmostApplication?.localizedName == "Safari")
+            let targetAppName = appName ?? (isSafari ? "Safari" : "Google Chrome")
+
+            let script: String
+            if isSafari {
+                script = """
+                tell application "Safari"
+                    activate
+                    set w to front window
+                    set tabCount to count of tabs of w
+                    set visited to {}
+                    repeat with i from 1 to tabCount
+                        set current tab of w to tab i of w
+                        set end of visited to (name of tab i of w)
+                        delay \(delay)
+                    end repeat
+                    set AppleScript's text item delimiters to "\n- "
+                    return ("Đã lướt qua " & tabCount & " tab trong Safari:\n- " & (visited as text))
+                end tell
+                """
+            } else {
+                script = """
+                tell application "\(targetAppName)"
+                    activate
+                    set w to front window
+                    set tabCount to count of tabs of w
+                    set visited to {}
+                    repeat with i from 1 to tabCount
+                        set active tab index of w to i
+                        set curTitle to (title of tab i of w)
+                        set end of visited to curTitle
+                        \(scrollDown ? "execute active tab of w javascript \"window.scrollBy({top: 450, behavior: 'smooth'});\"" : "")
+                        delay \(delay)
+                    end repeat
+                    set AppleScript's text item delimiters to "\n- "
+                    return ("Đã lướt qua " & tabCount & " tab trong \(targetAppName):\n- " & (visited as text))
+                end tell
+                """
+            }
+
+            var err: NSDictionary?
+            if let res = NSAppleScript(source: script)?.executeAndReturnError(&err).stringValue {
+                return res
+            } else if let err {
+                let msg = (err["NSAppleScriptErrorMessage"] as? String) ?? "Unknown script error"
+                return "Lỗi khi lướt tab: \(msg)"
+            }
+            return "Đã hoàn thành lướt qua tất cả các tab trong \(targetAppName)."
+        }.value
+    }
+
     static func getBrowserTabContent(tabKeyword: String? = nil) async -> String {
         if let kw = tabKeyword, !kw.isEmpty {
             _ = await openOrSwitchBrowserTab(target: kw)
@@ -2341,7 +3349,56 @@ enum ComputerUseHarness {
 
         return await MainActor.run { () -> String in
             let name = app.localizedName ?? "Google Chrome"
-            let escaped = javascript.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
+            let rawJs = javascript.trimmingCharacters(in: .whitespacesAndNewlines)
+
+            // Auto-wrap JavaScript to guarantee objects/arrays/primitives serialize into JSON strings for AppleScript
+            let wrappedJs: String
+            if rawJs.hasPrefix("(() =>") || rawJs.hasPrefix("(function") {
+                wrappedJs = """
+                (() => {
+                    try {
+                        const _r = (\(rawJs));
+                        if (_r === undefined) return "undefined";
+                        if (_r === null) return "null";
+                        if (typeof _r === "string") return _r;
+                        return JSON.stringify(_r);
+                    } catch(e) {
+                        return "JS Error: " + (e?.message || String(e));
+                    }
+                })()
+                """
+            } else if rawJs.contains("return ") || rawJs.contains("const ") || rawJs.contains("let ") || rawJs.contains("var ") || rawJs.contains(";") {
+                wrappedJs = """
+                (() => {
+                    try {
+                        const _fn = () => { \(rawJs) };
+                        const _r = _fn();
+                        if (_r === undefined) return "undefined";
+                        if (_r === null) return "null";
+                        if (typeof _r === "string") return _r;
+                        return JSON.stringify(_r);
+                    } catch(e) {
+                        return "JS Error: " + (e?.message || String(e));
+                    }
+                })()
+                """
+            } else {
+                wrappedJs = """
+                (() => {
+                    try {
+                        const _r = (\(rawJs));
+                        if (_r === undefined) return "undefined";
+                        if (_r === null) return "null";
+                        if (typeof _r === "string") return _r;
+                        return JSON.stringify(_r);
+                    } catch(e) {
+                        return "JS Error: " + (e?.message || String(e));
+                    }
+                })()
+                """
+            }
+
+            let escaped = wrappedJs.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
             let script: String
 
             if bundleId.contains("Chrome") || bundleId.contains("Arc") || bundleId.contains("Brave") || bundleId.contains("Edge") {
@@ -2361,7 +3418,10 @@ enum ComputerUseHarness {
                 }
                 return "Browser eval error in \(name): \(msg)"
             }
-            return res ?? "JavaScript executed successfully."
+            if let res, !res.isEmpty {
+                return res
+            }
+            return "undefined"
         }
     }
 
@@ -2438,19 +3498,115 @@ enum ComputerUseHarness {
 
             case "type":
                 guard let text, !text.isEmpty else { return "Missing text to type" }
-                for char in text.utf16 {
-                    let down = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true)
-                    var c = char
-                    down?.keyboardSetUnicodeString(stringLength: 1, unicodeString: &c)
-                    let up = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false)
-                    up?.keyboardSetUnicodeString(stringLength: 1, unicodeString: &c)
-                    down?.post(tap: .cghidEventTap)
-                    up?.post(tap: .cghidEventTap)
+
+                // Fallback / primary for browser apps (e.g. Discord in Chrome, Slack Web, form inputs):
+                if let front = NSWorkspace.shared.frontmostApplication,
+                   let bName = front.localizedName,
+                   ["Google Chrome", "Arc", "Brave Browser", "Microsoft Edge", "Safari"].contains(bName) {
+                    let escaped = text.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"").replacingOccurrences(of: "\n", with: "\\n")
+                    let js = """
+                    (() => {
+                        const el = document.activeElement;
+                        if (el) {
+                            if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
+                                el.value = (el.value || '') + "\(escaped)";
+                                el.dispatchEvent(new Event('input', {bubbles: true}));
+                                return 'Typed via input value';
+                            } else {
+                                document.execCommand('insertText', false, "\(escaped)");
+                                return 'Typed via insertText';
+                            }
+                        }
+                        return 'No active element';
+                    })()
+                    """
+                    let domEscaped = js.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
+                    let domScript = "tell application \"\(bName)\" to execute active tab of front window javascript \"\(domEscaped)\""
+                    var domErr: NSDictionary?
+                    let res = NSAppleScript(source: domScript)?.executeAndReturnError(&domErr).stringValue
+                    if domErr == nil && res != nil && !res!.contains("No active element") {
+                        return "Typed \(text.count) characters into \(bName) (DOM)."
+                    }
                 }
+
+                // Universal Desktop Typing for native & Electron apps (Antigravity IDE, VS Code, Discord, Notes):
+                guard AXIsProcessTrusted() else {
+                    coucouLog("[ComputerAction] BLOCKED: Coucou does not have macOS Accessibility permissions to type '\(text)'.")
+                    return "Lỗi quyền macOS: Coucou chưa được cấp quyền Trợ năng (Accessibility) để gõ chữ vào ứng dụng khác. Hãy mở Cài đặt hệ thống > Quyền riêng tư & Bảo mật > Trợ năng và cấp quyền cho Coucou."
+                }
+
+                // 1. Pasteboard + Cmd+V (works 100% reliably in Electron, web inputs, text editors)
+                let pb = NSPasteboard.general
+                let oldPaste = pb.string(forType: .string)
+                pb.clearContents()
+                pb.setString(text, forType: .string)
+
+                let source = CGEventSource(stateID: .combinedSessionState)
+                let vDown = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true) // 'v'
+                vDown?.flags = .maskCommand
+                let vUp = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: false)
+                vUp?.flags = .maskCommand
+                vDown?.post(tap: .cgSessionEventTap)
+                vDown?.post(tap: .cghidEventTap)
+                usleep(25_000)
+                vUp?.post(tap: .cgSessionEventTap)
+                vUp?.post(tap: .cghidEventTap)
+                usleep(25_000)
+
+                if let old = oldPaste {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                        let p = NSPasteboard.general
+                        p.clearContents()
+                        p.setString(old, forType: .string)
+                    }
+                }
+
+                coucouLog("[ComputerAction] Typed '\(text)' successfully via Pasteboard Cmd+V")
                 return "Typed \(text.count) characters"
 
             case "key":
                 guard let key, !key.isEmpty else { return "Missing key to press" }
+                let isBrowser = {
+                    if let front = NSWorkspace.shared.frontmostApplication,
+                       let bName = front.localizedName {
+                        return ["Google Chrome", "Arc", "Brave Browser", "Microsoft Edge", "Safari"].contains(bName)
+                    }
+                    return false
+                }()
+                if !isBrowser && !AXIsProcessTrusted() {
+                    coucouLog("[ComputerAction] BLOCKED: Coucou does not have macOS Accessibility permissions to press '\(key)'.")
+                    return "Lỗi quyền macOS: Coucou chưa được cấp quyền Trợ năng (Accessibility) để nhấn phím '\(key)' vào ứng dụng khác."
+                }
+                if key == "enter" || key == "return" {
+                    let source = CGEventSource(stateID: .combinedSessionState)
+                    let down = CGEvent(keyboardEventSource: source, virtualKey: 36, keyDown: true)
+                    let up = CGEvent(keyboardEventSource: source, virtualKey: 36, keyDown: false)
+                    down?.post(tap: .cgSessionEventTap)
+                    down?.post(tap: .cghidEventTap)
+                    up?.post(tap: .cgSessionEventTap)
+                    up?.post(tap: .cghidEventTap)
+
+                    if let front = NSWorkspace.shared.frontmostApplication,
+                       let bName = front.localizedName,
+                       ["Google Chrome", "Arc", "Brave Browser", "Microsoft Edge", "Safari"].contains(bName) {
+                        let js = """
+                        (() => {
+                            const el = document.activeElement;
+                            if (el) {
+                                const opts = {key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true};
+                                el.dispatchEvent(new KeyboardEvent('keydown', opts));
+                                el.dispatchEvent(new KeyboardEvent('keypress', opts));
+                                el.dispatchEvent(new KeyboardEvent('keyup', opts));
+                            }
+                        })()
+                        """
+                        let escaped = js.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
+                        let domScript = "tell application \"\(bName)\" to execute active tab of front window javascript \"\(escaped)\""
+                        var domErr: NSDictionary?
+                        _ = NSAppleScript(source: domScript)?.executeAndReturnError(&domErr)
+                    }
+                    return "Pressed key: \(key)"
+                }
                 let script = "tell application \"System Events\" to keystroke \"\(key)\""
                 var err: NSDictionary?
                 NSAppleScript(source: script)?.executeAndReturnError(&err)

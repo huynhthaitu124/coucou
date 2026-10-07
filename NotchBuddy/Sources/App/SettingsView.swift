@@ -432,14 +432,66 @@ struct SettingsView: View {
                         HStack(spacing: 8) {
                             Text("Volume")
                                 .frame(width: 56, alignment: .leading)
-                            Slider(value: $state.soundVolume, in: 0...0.2)
+                            Slider(value: $state.soundVolume, in: 0...1.0)
                                 .disabled(!state.soundEnabled)
-                            Text("\(Int(state.soundVolume / 0.2 * 100)) %")
+                            Text("\(Int(state.soundVolume * 100)) %")
                                 .frame(width: 36, alignment: .trailing)
                                 .monospacedDigit()
                         }
                     }
                     .padding(6)
+                }
+
+                // MARK: Screen Position
+                GroupBox("Vị trí hiển thị Coucou (Screen Position)") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Chọn vị trí neo của Coucou trên màn hình: ở Notch, cạnh bên hoặc 4 góc.")
+                            .font(.system(size: 11.5))
+                            .foregroundColor(.secondary)
+
+                        LazyVGrid(columns: [
+                            GridItem(.flexible()),
+                            GridItem(.flexible()),
+                            GridItem(.flexible())
+                        ], spacing: 10) {
+                            ForEach(CoucouPosition.allCases) { pos in
+                                Button {
+                                    withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                                        state.coucouPosition = pos
+                                    }
+                                } label: {
+                                    HStack(spacing: 8) {
+                                        Image(systemName: pos.iconSymbol)
+                                            .font(.system(size: 13, weight: .medium))
+                                            .foregroundColor(state.coucouPosition == pos ? Color(hex: "#38BDF8") : .secondary)
+
+                                        Text(pos.displayName)
+                                            .font(.system(size: 12, weight: state.coucouPosition == pos ? .semibold : .regular))
+                                            .foregroundColor(state.coucouPosition == pos ? .primary : .secondary)
+                                            .lineLimit(1)
+
+                                        Spacer(minLength: 0)
+
+                                        if state.coucouPosition == pos {
+                                            Image(systemName: "checkmark.circle.fill")
+                                                .font(.system(size: 11))
+                                                .foregroundColor(Color(hex: "#38BDF8"))
+                                        }
+                                    }
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 8)
+                                    .background(state.coucouPosition == pos ? Color(hex: "#38BDF8").opacity(0.12) : Color(NSColor.controlBackgroundColor))
+                                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 8)
+                                            .stroke(state.coucouPosition == pos ? Color(hex: "#38BDF8").opacity(0.4) : Color.gray.opacity(0.18), lineWidth: 1)
+                                    )
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+                    .padding(8)
                 }
 
                 // MARK: Timings

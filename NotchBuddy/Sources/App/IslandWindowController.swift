@@ -54,10 +54,9 @@ final class IslandWindowController: NSWindowController {
 
         let panelW: CGFloat = 880
         let panelH: CGFloat = 580
-        let sf = screen.frame
+        let initialRect = Self.panelFrame(for: AppState.shared.coucouPosition, screen: screen, panelW: panelW, panelH: panelH)
         let panel = IslandPanel(
-            contentRect: NSRect(x: sf.midX - panelW/2, y: sf.maxY - panelH,
-                                width: panelW, height: panelH),
+            contentRect: initialRect,
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered, defer: false
         )
@@ -150,6 +149,55 @@ final class IslandWindowController: NSWindowController {
                     self.islandPanel.makeKey()
                 }
             }
+
+        NotificationCenter.default.addObserver(
+            forName: .coucouPositionChanged, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.repositionPanel(animated: true)
+            }
+        }
+    }
+
+    // MARK: - Screen Position Calculations
+
+    static func panelFrame(for position: CoucouPosition, screen: NSScreen, panelW: CGFloat, panelH: CGFloat) -> NSRect {
+        let sf = screen.frame
+        switch position {
+        case .notch:
+            return NSRect(x: sf.midX - panelW/2, y: sf.maxY - panelH + 3, width: panelW, height: panelH)
+        case .topLeft:
+            return NSRect(x: sf.minX, y: sf.maxY - panelH, width: panelW, height: panelH)
+        case .topRight:
+            return NSRect(x: sf.maxX - panelW, y: sf.maxY - panelH, width: panelW, height: panelH)
+        case .leftEdge:
+            return NSRect(x: sf.minX, y: sf.midY - panelH/2, width: panelW, height: panelH)
+        case .rightEdge:
+            return NSRect(x: sf.maxX - panelW, y: sf.midY - panelH/2, width: panelW, height: panelH)
+        case .bottomLeft:
+            return NSRect(x: sf.minX, y: sf.minY, width: panelW, height: panelH)
+        case .bottomRight:
+            return NSRect(x: sf.maxX - panelW, y: sf.minY, width: panelW, height: panelH)
+        }
+    }
+
+    func repositionPanel(animated: Bool = true) {
+        guard let panel = window as? IslandPanel,
+              let screen = panel.screen ?? Self.notchScreen() ?? NSScreen.main else { return }
+
+        let panelW: CGFloat = 880
+        let panelH: CGFloat = 580
+        let targetRect = Self.panelFrame(for: state.coucouPosition, screen: screen, panelW: panelW, panelH: panelH)
+
+        if animated {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.35
+                context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                panel.animator().setFrame(targetRect, display: true)
+            }
+        } else {
+            panel.setFrame(targetRect, display: true)
+        }
     }
 
     // MARK: - FSM wiring
@@ -168,8 +216,6 @@ final class IslandWindowController: NSWindowController {
                 } else if from == .hidden {
                     SoundEngine.shared.play("peek")
                 }
-                // setMode BEFORE changing view: onChange(of: state.view) guards on .expanded,
-                // so setting view while already compact won't trigger a spurious open animation.
                 self.setMode(.compact)
                 if from == .coucou { self.state.view = self.defaultView() }
                 // Start 60s hide timer if mouse is not currently over the island
@@ -183,7 +229,7 @@ final class IslandWindowController: NSWindowController {
                 }
 
             case .coucou:
-                self.expand(to: .greeting)
+                self.expand(to: self.defaultView())
             }
         }
 
@@ -258,8 +304,9 @@ final class IslandWindowController: NSWindowController {
         }
         wasInIsland = inIsland
 
-        // Bot-head hover (love emote)
-        let overBot = state.mode == .expanded && state.stateOverride == nil && isBotHit(local)
+        // Bot-head hover (love emote & state badge expansion)
+        let overBot = state.mode != .hidden && state.stateOverride == nil && isBotHit(local)
+        if overBot != state.isBotHovered { state.isBotHovered = overBot }
         if overBot && !botHovering { botHoverIn(mousePos: NSEvent.mouseLocation) }
         if !overBot && botHovering { botHoverOut() }
         botHovering = overBot
@@ -284,19 +331,21 @@ final class IslandWindowController: NSWindowController {
 
     // MARK: - Bot-head hover (love emote — mirrors prototype botHover())
 
+    private var lastHoverSoundTime: Double = 0
+
     private func botHoverIn(mousePos: CGPoint) {
-        guard state.mode == .expanded, state.stateOverride == nil else { return }
-        guard CACurrentMediaTime() - lastLoveTime > 6 else { return }
+        guard state.mode != .hidden, state.stateOverride == nil else { return }
         botHoverStartPos = mousePos
-        NotificationCenter.default.post(name: .botBlink, object: nil)
-        NotificationCenter.default.post(name: .botSetTgEs, object: CGFloat(1.08))
-        SoundEngine.shared.play("hover")
+        let now = CACurrentMediaTime()
+        if now - lastHoverSoundTime > 1.8 {
+            lastHoverSoundTime = now
+            SoundEngine.shared.play("hover")
+        }
         scheduleLoveTimer()
     }
 
     private func botHoverOut() {
         botHoverTimer?.cancel()
-        NotificationCenter.default.post(name: .botSetTgEs, object: CGFloat(1))
     }
 
     private func scheduleLoveTimer() {
@@ -330,8 +379,8 @@ final class IslandWindowController: NSWindowController {
         guard mode != prev else { return }
         let shrinking = modeLevel(mode) < modeLevel(prev)
         let anim: Animation = shrinking
-            ? .timingCurve(0.45, 0, 0.2, 1, duration: 0.34)
-            : .spring(response: 0.5, dampingFraction: 0.72)
+            ? .timingCurve(0.4, 0, 0.2, 1, duration: 0.30)
+            : .spring(response: 0.46, dampingFraction: 0.76)
         withAnimation(anim) { state.mode = mode }
         if mode == .expanded { SoundEngine.shared.play("open") }
         if prev == .expanded {
@@ -348,10 +397,17 @@ final class IslandWindowController: NSWindowController {
             setMode(.expanded)
         }
         state.lastActivity = .now
+        if view == .prompt {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                guard let self, self.state.mode == .expanded else { return }
+                self.islandPanel.makeKey()
+            }
+        }
         #if !APPSTORE
         if view == .prompt || view == .overview {
-            autoCaptureWindowContextIfNeeded(force: true)
-            startContextSyncTimer()
+            // Run detached from MainActor so zero frames are dropped!
+            self.autoCaptureWindowContextIfNeeded(force: true)
+            self.startContextSyncTimer()
         } else {
             stopContextSyncTimer()
         }
@@ -375,17 +431,25 @@ final class IslandWindowController: NSWindowController {
             }
             return nil
         }()
+        let fallback = state.lastExternalApp
 
-        if let ctx = WindowContextCapture.captureActive(from: targetApp) {
-            if let targetApp = targetApp ?? NSWorkspace.shared.frontmostApplication,
-               targetApp.bundleIdentifier != Bundle.main.bundleIdentifier {
-                state.lastExternalApp = targetApp
-            }
-            if let dismissed = state.dismissedContextKey, ctx.contextKey == dismissed && !force {
-                return
-            }
-            if state.promptContext != ctx {
-                state.promptContext = ctx
+        Task.detached(priority: .utility) { [weak self] in
+            guard let ctx = WindowContextCapture.captureActive(from: targetApp, fallbackApp: fallback) else { return }
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                guard self.state.mode == .expanded else { return }
+                if let targetApp = targetApp ?? NSWorkspace.shared.frontmostApplication,
+                   targetApp.bundleIdentifier != Bundle.main.bundleIdentifier {
+                    self.state.lastExternalApp = targetApp
+                }
+                if let dismissed = self.state.dismissedContextKey, ctx.contextKey == dismissed && !force {
+                    return
+                }
+                if self.state.promptContext != ctx {
+                    withAnimation(.spring(response: 0.28, dampingFraction: 0.8)) {
+                        self.state.promptContext = ctx
+                    }
+                }
             }
         }
         #endif
@@ -414,12 +478,17 @@ final class IslandWindowController: NSWindowController {
 
     func collapse() {
         guard fsm.isHeldOpen?() != true else { return }
+        guard state.mode == .expanded else { return }
         state.isPinned = false
         finishedPinTimer?.cancel()
         stopContextSyncTimer()
-        // Keep the FSM in step with what is on screen (home/coucou → petit now).
+        
+        let targetMode: IslandMode = .compact
         fsm.collapse()
-        setMode(hasNotch ? .hidden : .compact)
+        if state.mode != targetMode {
+            setMode(targetMode)
+        }
+        
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
             guard let self, self.state.mode != .expanded else { return }
             self.state.view = .prompt
@@ -493,8 +562,10 @@ final class IslandWindowController: NSWindowController {
             guard let self else { return event }
             MainActor.assumeIsolated {
                 guard self.wasInIsland else { return }
-                // If a proactive suggestion is active, let its SwiftUI buttons ("Thực hiện", "xmark") handle clicks directly
-                guard self.state.proactiveSuggestion == nil else { return }
+                // If a proactive suggestion control ("Thực hiện", "xmark") was clicked, let SwiftUI handle it
+                if self.isSuggestionControlHit(event.locationInWindow) {
+                    return
+                }
                 self.pendingIslandClick = true
                 self.hoverTimer?.cancel()
                 self.botHoverTimer?.cancel()
@@ -502,8 +573,8 @@ final class IslandWindowController: NSWindowController {
                 // Drag only starts when clicking directly on the bot head
                 guard self.isBotHit(event.locationInWindow) else { return }
                 self.attachDragStart = NSEvent.mouseLocation
-                // Post slap only when expanded
-                guard self.state.mode == .expanded else { return }
+                // Post slap when bot is clicked
+                guard self.state.mode != .hidden else { return }
                 NotificationCenter.default.post(name: .triggerSlap, object: nil)
             }
             return event
@@ -550,7 +621,7 @@ final class IslandWindowController: NSWindowController {
                     finishDrag()
                 } else {
                     self.attachDragStart = nil
-                    if hadPendingClick && self.state.mode != .expanded && self.state.proactiveSuggestion == nil {
+                    if hadPendingClick && self.state.mode != .expanded {
                         if self.fsm.state == .home {
                             // FSM already thinks it's open (e.g. the view folded it): just reopen.
                             self.expand(to: self.defaultView())
@@ -779,14 +850,11 @@ final class IslandWindowController: NSWindowController {
     // MARK: - Coordinate conversion: window (AppKit, y-up) → island coords (y-down, 0,0 = island top-left)
 
     func windowToIsland(_ loc: CGPoint) -> CGPoint {
-        let panelH = window?.frame.height ?? 580
-        let panelW = window?.frame.width  ?? 880
-        let currentW = state.isLargeExpanded ? IslandConst.largeExpandedWidth : IslandConst.expandedWidth
-        let islandLeft = (panelW - currentW) / 2
-        // Island is glued to panel top; its bottom in AppKit = panelH - 176
+        guard let panel = window as? IslandPanel else { return loc }
+        let islandRect = panel.currentIslandFrame(nw: notchW, nh: notchH)
         return CGPoint(
-            x: loc.x - islandLeft,
-            y: panelH - loc.y                // AppKit y is from bottom; island y from top
+            x: loc.x - islandRect.minX,
+            y: islandRect.maxY - loc.y
         )
     }
 
@@ -846,38 +914,53 @@ final class IslandWindowController: NSWindowController {
     // MARK: - Bot hit test (for slap trigger)
 
     private func isBotHit(_ windowPoint: CGPoint) -> Bool {
+        guard let panel = window as? IslandPanel else { return false }
         let s = AppState.shared
-        let panelH = window?.frame.height ?? 580
-        let panelW = window?.frame.width  ?? 880
-        let (islandW, fixedH) = islandSize(mode: s.mode, view: s.view,
-                                            progress: s.uploadProgress,
-                                            hasProactiveSuggestion: s.proactiveSuggestion != nil,
-                                            isLarge: s.isLargeExpanded,
-                                            nw: notchW, nh: notchH)
-        // Chat view resizes dynamically — must match IslandContainer.chatPromptHeight
-        let islandH: CGFloat
-        if s.mode == .expanded && s.view == .prompt {
-            let base: CGFloat = s.isLargeExpanded ? 400 : 240
-            let perMsg: CGFloat = 40
-            let maxH: CGFloat = s.isLargeExpanded ? 520 : 300
-            islandH = min(maxH, base + CGFloat(s.chatHistory.count) * perMsg)
-        } else if s.mode == .expanded && s.view == .history {
-            islandH = s.isLargeExpanded ? 480 : 280
-        } else {
-            islandH = fixedH
-        }
-        let islandMinX = (panelW - islandW) / 2
+        let islandRect = panel.currentIslandFrame(nw: notchW, nh: notchH)
+        let earR: CGFloat = (s.coucouPosition == .notch) ? 20 : 0
         let (cx, cy, diameter, _) = botPosition(mode: s.mode, view: s.view,
-                                                  islandW: islandW, islandH: islandH,
-                                                  uploadProgress: s.uploadProgress, hasNotch: s.hasNotch)
-        let radius = (diameter / 0.6) / 2
-        // botPosition cy is from island TOP; panel AppKit coords have y=0 at bottom
-        // island top in AppKit coords = panelH (island glued to top of panel/screen)
-        let botX = islandMinX + cx
-        let botY = panelH - cy
+                                                  islandW: islandRect.width - earR * 2, islandH: islandRect.height,
+                                                  uploadProgress: s.uploadProgress, hasNotch: s.hasNotch,
+                                                  position: s.coucouPosition)
+        guard diameter > 0 else { return false }
+        let radius = diameter / 2 + 5
+        let botX = islandRect.minX + earR + cx
+        let botY = islandRect.maxY - cy
         let dx = windowPoint.x - botX
         let dy = windowPoint.y - botY
         return dx*dx + dy*dy <= radius * radius
+    }
+
+    // MARK: - Suggestion interactive controls hit test
+    // Returns true when the click lands on the trailing action buttons ("Thực hiện" or "xmark"),
+    // so SwiftUI can handle their clicks directly without triggering an island expansion.
+    private func isSuggestionControlHit(_ windowPoint: CGPoint) -> Bool {
+        guard state.proactiveSuggestion != nil, state.mode != .expanded else { return false }
+        // Clicking directly on the bot is always Coucou
+        if isBotHit(windowPoint) { return false }
+        guard let panel = window as? IslandPanel else { return false }
+        let islandRect = panel.currentIslandFrame(nw: notchW, nh: notchH)
+
+        if state.coucouPosition == .leftEdge || state.coucouPosition == .rightEdge {
+            // Vertical dock: controls are located below the bot (bot is at top ~48pt)
+            // AppKit coords: Y from minY to maxY - 48
+            let controlsRect = CGRect(
+                x: islandRect.minX,
+                y: islandRect.minY,
+                width: islandRect.width,
+                height: max(0, islandRect.height - 48)
+            )
+            return controlsRect.contains(windowPoint)
+        } else {
+            // Horizontal notch/bar: controls in trailing area
+            let controlsRect = CGRect(
+                x: islandRect.maxX - 145,
+                y: islandRect.minY,
+                width: 145,
+                height: islandRect.height
+            )
+            return controlsRect.contains(windowPoint)
+        }
     }
 
     // MARK: - Notch detection (static)
@@ -925,7 +1008,8 @@ final class IslandPanel: NSPanel {
                                       progress: s.uploadProgress,
                                       hasProactiveSuggestion: s.proactiveSuggestion != nil,
                                       isLarge: s.isLargeExpanded,
-                                      nw: nw, nh: nh)
+                                      nw: nw, nh: nh,
+                                      position: s.coucouPosition)
         let h: CGFloat
         if s.mode == .expanded && s.view == .prompt {
             let base: CGFloat = s.isLargeExpanded ? 400 : 240
@@ -937,7 +1021,38 @@ final class IslandPanel: NSPanel {
         } else {
             h = fixedH
         }
-        return CGRect(x: (frame.width - w) / 2, y: frame.height - h, width: w, height: h)
+
+        let pos = s.coucouPosition
+        let earR: CGFloat = (pos == .notch) ? 20 : 0
+        let totalW = (pos == .notch) ? w + earR * 2 : w
+        let x: CGFloat
+        let y: CGFloat
+
+        switch pos {
+        case .notch:
+            x = (frame.width - totalW) / 2
+            y = frame.height - h
+        case .topLeft:
+            x = 0
+            y = frame.height - h
+        case .topRight:
+            x = frame.width - w
+            y = frame.height - h
+        case .leftEdge:
+            x = 0
+            y = (frame.height - h) / 2
+        case .rightEdge:
+            x = frame.width - w
+            y = (frame.height - h) / 2
+        case .bottomLeft:
+            x = 0
+            y = 0
+        case .bottomRight:
+            x = frame.width - w
+            y = 0
+        }
+
+        return CGRect(x: x, y: y, width: (pos == .notch ? totalW : w), height: h)
     }
 }
 
@@ -977,26 +1092,49 @@ extension Notification.Name {
     static let islandCollapse   = Notification.Name("notchBuddy.islandCollapse")
     static let openFullSettings = Notification.Name("notchBuddy.openFullSettings")
     static let hookReveal       = Notification.Name("notchBuddy.hookReveal")
+    static let coucouPositionChanged = Notification.Name("notchBuddy.coucouPositionChanged")
     // Greeting ↔ IslandWindowController
     static let greetComplete    = Notification.Name("notchBuddy.greetComplete")
     static let greetingHover    = Notification.Name("notchBuddy.greetingHover")
     static let greetingInterrupt = Notification.Name("notchBuddy.greetingInterrupt")
 }
 
+@MainActor
 func islandSize(mode: IslandMode, view: IslandView,
                 progress: Double = 0,
                 hasProactiveSuggestion: Bool = false,
                 isLarge: Bool = false,
                 nw: CGFloat = IslandConst.notchWidth,
-                nh: CGFloat = IslandConst.notchHeight) -> (CGFloat, CGFloat) {
+                nh: CGFloat = IslandConst.notchHeight,
+                position: CoucouPosition = AppState.shared.coucouPosition) -> (CGFloat, CGFloat) {
     let safeAreaTop = max(nh, 33)
     if hasProactiveSuggestion && mode != .expanded {
-        // Shelf extends immediately below the physical notch danger area
-        return (max(nw + 140, 390), safeAreaTop + 40)
+        if position == .notch {
+            // Shelf extends immediately below the physical notch danger area
+            return (max(nw + 140, 390), safeAreaTop + 40)
+        } else if position == .leftEdge || position == .rightEdge {
+            return (48, 148)
+        } else {
+            return (280, 48)
+        }
     }
     switch mode {
-    case .hidden:   return (nw, nh)
-    case .compact:  return (nw + 160, nh)
+    case .hidden:
+        if position == .notch {
+            return (nw, nh)
+        } else if position == .leftEdge || position == .rightEdge {
+            return (44, 54)
+        } else {
+            return (62, 36)
+        }
+    case .compact:
+        if position == .notch {
+            return (nw + 160, nh)
+        } else if position == .leftEdge || position == .rightEdge {
+            return (44, 54)
+        } else {
+            return (62, 36)
+        }
     case .expanded:
         let layout = IslandConst.viewLayouts[view]!
         let width = isLarge ? IslandConst.largeExpandedWidth : IslandConst.expandedWidth

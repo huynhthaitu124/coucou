@@ -16,6 +16,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setupIsland()
         checkAccessibilityPermissions()
         CoucouSentinel.shared.startMonitoring(state: AppState.shared)
+        NotificationBannerObserver.shared.start(state: AppState.shared)
+        FileSystemInputObserver.shared.start(state: AppState.shared)
     }
 
     private func checkAccessibilityPermissions() {
@@ -101,8 +103,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         islandController = IslandWindowController()
         islandController?.showWindow(nil)
         islandController?.fsm.launch()
-        // Background pollers & HookServer disabled per user preference for chat-only Coucou
-        // HookServer.shared.start()
+        // Local Unix domain socket listener for Claude Code and external CLI/Mail events
+        HookServer.shared.start()
         // N8nPoller.shared.start()
         // VercelPoller.shared.start()
         // ResendPoller.shared.start()

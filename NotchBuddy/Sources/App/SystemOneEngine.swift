@@ -40,19 +40,18 @@ public final class SystemOneEngine {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
 
         // 1. Native Context Awareness: Only pre-inspect if user is specifically asking to check/read screen or window
-        if let context = context {
+        let isExplicitWindowInspect = q.contains("đọc màn hình") || q.contains("đọc cửa sổ") || q.contains("xem màn hình") || q.contains("màn hình đang") || q.contains("cửa sổ hiện tại") || q.contains("inspect window") || (q.contains("đọc") && (q.contains("màn hình") || q.contains("cửa sổ")))
+        if let context = context, isExplicitWindowInspect {
             switch context {
             case .window(let appName, _, _):
-                if q.contains("đọc") || q.contains("xem") || q.contains("màn hình") || q.contains("cửa sổ") || q.contains("inspect") || q.contains("check") {
-                    let elapsed = (CFAbsoluteTimeGetCurrent() - startTime) * 1000
-                    return SystemOneDecision(
-                        action: .inspectWindow,
-                        target: appName.isEmpty ? nil : appName,
-                        confidence: 0.95,
-                        executionTimeMs: elapsed,
-                        sourceEngine: "CoreML-ANE"
-                    )
-                }
+                let elapsed = (CFAbsoluteTimeGetCurrent() - startTime) * 1000
+                return SystemOneDecision(
+                    action: .inspectWindow,
+                    target: appName.isEmpty ? nil : appName,
+                    confidence: 0.95,
+                    executionTimeMs: elapsed,
+                    sourceEngine: "CoreML-ANE"
+                )
             case .file(let name, let fileURL):
                 if q.contains("đọc file") || q.contains("nội dung file") || q.contains("xem file") {
                     let elapsed = (CFAbsoluteTimeGetCurrent() - startTime) * 1000
@@ -65,27 +64,23 @@ public final class SystemOneEngine {
                     )
                 }
             case .clipboard(let appName, _, _, _):
-                if q.contains("đọc") || q.contains("xem") || q.contains("màn hình") || q.contains("cửa sổ") || q.contains("inspect") || q.contains("check") {
-                    let elapsed = (CFAbsoluteTimeGetCurrent() - startTime) * 1000
-                    return SystemOneDecision(
-                        action: .inspectWindow,
-                        target: appName.isEmpty ? nil : appName,
-                        confidence: 0.95,
-                        executionTimeMs: elapsed,
-                        sourceEngine: "CoreML-ANE"
-                    )
-                }
+                let elapsed = (CFAbsoluteTimeGetCurrent() - startTime) * 1000
+                return SystemOneDecision(
+                    action: .inspectWindow,
+                    target: appName.isEmpty ? nil : appName,
+                    confidence: 0.95,
+                    executionTimeMs: elapsed,
+                    sourceEngine: "CoreML-ANE"
+                )
             case .composite(let wApp, _, _, _, _, _, _, _):
-                if q.contains("đọc") || q.contains("xem") || q.contains("màn hình") || q.contains("cửa sổ") || q.contains("inspect") || q.contains("check") {
-                    let elapsed = (CFAbsoluteTimeGetCurrent() - startTime) * 1000
-                    return SystemOneDecision(
-                        action: .inspectWindow,
-                        target: wApp.isEmpty ? nil : wApp,
-                        confidence: 0.95,
-                        executionTimeMs: elapsed,
-                        sourceEngine: "CoreML-ANE"
-                    )
-                }
+                let elapsed = (CFAbsoluteTimeGetCurrent() - startTime) * 1000
+                return SystemOneDecision(
+                    action: .inspectWindow,
+                    target: wApp.isEmpty ? nil : wApp,
+                    confidence: 0.95,
+                    executionTimeMs: elapsed,
+                    sourceEngine: "CoreML-ANE"
+                )
             }
         }
 
@@ -160,6 +155,88 @@ public final class SystemOneEngine {
         )
     }
 
+    /// Determines whether the user's query is actually relevant to the active window context.
+    /// If user asks a general question (e.g. "kiểm tra giá vàng", "thời tiết", "chào bạn", math, general Q&A),
+    /// the ambient window context is IRRELEVANT and should not be attached to the prompt.
+    public static func isQueryRelevantToWindow(query: String, windowCtx: PromptContext) -> Bool {
+        guard case .window(let wApp, let wTitle, let wUrl) = windowCtx else { return true }
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if q.isEmpty { return true } // Ambient/idle preview allowed when no query typed yet
+
+        let appLower = wApp.lowercased()
+        let titleLower = wTitle.lowercased()
+
+        // 1. Explicit mention of the app name or its common nickname
+        if !appLower.isEmpty {
+            if q.contains(appLower) { return true }
+            if appLower.contains("antigravity") && (q.contains("anti") || q.contains("antigravity")) { return true }
+            if appLower.contains("chrome") && q.contains("chrome") { return true }
+            if appLower.contains("safari") && q.contains("safari") { return true }
+            if appLower.contains("xcode") && q.contains("xcode") { return true }
+            if appLower.contains("cursor") && q.contains("cursor") { return true }
+            if (appLower.contains("code") || appLower.contains("vscode")) && (q.contains("vscode") || q.contains("vs code") || q.contains("code")) { return true }
+            if appLower.contains("terminal") && (q.contains("terminal") || q.contains("iterm") || q.contains("lệnh")) { return true }
+            if appLower.contains("slack") && q.contains("slack") { return true }
+            if appLower.contains("figma") && q.contains("figma") { return true }
+        }
+
+        // 2. Explicit window/screen/browser/UI keywords
+        let windowKeywords = [
+            "trang này", "trang web", "web này", "tab này", "tab hiện tại", "app này", "ứng dụng này",
+            "cửa sổ", "màn hình", "giao diện", "nút", "thanh tìm kiếm", "click", "bấm", "nhấn",
+            "gõ vào", "nhập vào", "tóm tắt trang", "đọc trang", "dịch trang", "xem trang",
+            "inspect", "cuộn", "scroll", "chụp màn hình", "screenshot", "reload", "f5",
+            "trên màn hình", "trong app", "trong cửa sổ", "xem giúp", "code này", "file này",
+            "sửa lỗi này", "fix lỗi này", "build app", "chạy app"
+        ]
+        if windowKeywords.contains(where: { q.contains($0) }) {
+            return true
+        }
+
+        // 3. Significant matching words from window title or URL
+        if !wTitle.isEmpty && wTitle.localizedCaseInsensitiveCompare(wApp) != .orderedSame {
+            let titleTokens = titleLower.components(separatedBy: CharacterSet.alphanumerics.inverted)
+                .filter { $0.count >= 4 }
+            for token in titleTokens {
+                if q.contains(token) { return true }
+            }
+        }
+        if let url = wUrl?.lowercased(), !url.isEmpty {
+            if let host = URL(string: url)?.host?.lowercased(), !host.isEmpty, q.contains(host) {
+                return true
+            }
+        }
+
+        // 4. Default: Query has NO connection to the background window!
+        // E.g. "kiểm tra giá vàng", "giá vàng", "giá btc", "thời tiết", "tin tức", "giải toán", "chào bạn", etc.
+        return false
+    }
+
+    /// Determines whether the user's query is relevant to recent clipboard text.
+    public static func isQueryRelevantToClipboard(query: String, clipboardCtx: PromptContext, clipAgeSeconds: TimeInterval) -> Bool {
+        guard case .clipboard(_, _, _, let snippet) = clipboardCtx else { return true }
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if q.isEmpty { return clipAgeSeconds <= 60 }
+
+        let clipKeywords = [
+            "vừa copy", "đoạn này", "clipboard", "lỗi này", "code này", "dịch đoạn", "giải thích đoạn",
+            "đoạn văn", "đoạn text", "nội dung copy", "paste", "dán"
+        ]
+        if clipKeywords.contains(where: { q.contains($0) }) {
+            return true
+        }
+
+        let snippetTokens = snippet.lowercased().components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { $0.count >= 4 }
+        var matchCount = 0
+        for token in snippetTokens.prefix(30) {
+            if q.contains(token) { matchCount += 1 }
+        }
+        if matchCount >= 2 { return true }
+
+        return false
+    }
+
     /// Evaluates active window vs recent clipboard using JEV non-autoregressive classification rules.
     /// Resolves potential context collisions (e.g. user copied text AND opened browser) into a clean,
     /// typed PromptContext (either window, clipboard, or composite).
@@ -169,22 +246,33 @@ public final class SystemOneEngine {
         clipboardTime: Date?,
         userQuery: String? = nil
     ) -> PromptContext? {
-        // 1. If only one exists, return it directly
-        guard let windowCtx else { return clipboardCtx }
-        guard let clipboardCtx else { return windowCtx }
-
-        // Extract window info
-        guard case .window(let wApp, let wTitle, let wUrl) = windowCtx else {
-            return windowCtx
-        }
-        // Extract clipboard info
-        guard case .clipboard(let cApp, let cTitle, let cUrl, let snippet) = clipboardCtx else {
-            return windowCtx
-        }
-
         let q = userQuery?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
         let now = Date()
         let clipAgeSeconds = clipboardTime.map { now.timeIntervalSince($0) } ?? 0
+
+        // If user query is provided, check relevance of each candidate context:
+        var effectiveWindow = windowCtx
+        if let w = windowCtx, !q.isEmpty, !Self.isQueryRelevantToWindow(query: q, windowCtx: w) {
+            effectiveWindow = nil
+        }
+
+        var effectiveClipboard = clipboardCtx
+        if let c = clipboardCtx, !q.isEmpty, !Self.isQueryRelevantToClipboard(query: q, clipboardCtx: c, clipAgeSeconds: clipAgeSeconds) {
+            effectiveClipboard = nil
+        }
+
+        // 1. If only one or none is relevant, return directly
+        guard let wCtx = effectiveWindow else { return effectiveClipboard }
+        guard let cCtx = effectiveClipboard else { return wCtx }
+
+        // Extract window info
+        guard case .window(let wApp, let wTitle, let wUrl) = wCtx else {
+            return wCtx
+        }
+        // Extract clipboard info
+        guard case .clipboard(let cApp, let cTitle, let cUrl, let snippet) = cCtx else {
+            return wCtx
+        }
 
         // 2. Query-directed override (if user explicitly refers to one or both)
         if !q.isEmpty {
@@ -196,16 +284,16 @@ public final class SystemOneEngine {
                                q.contains("giải thích đoạn")
 
             if isWindowIntent && !isClipIntent {
-                return windowCtx
+                return wCtx
             }
             if isClipIntent && !isWindowIntent {
-                return clipboardCtx
+                return cCtx
             }
         }
 
         // 3. Stale Clipboard Check (if copy was > 120 seconds ago, decay to active window)
         if clipAgeSeconds > 120 {
-            return windowCtx
+            return wCtx
         }
 
         // 4. Intra-App / Intra-Page Selection Check
@@ -279,6 +367,6 @@ public final class SystemOneEngine {
         }
 
         // Default to active window if clipboard is moderately aged
-        return windowCtx
+        return wCtx
     }
 }

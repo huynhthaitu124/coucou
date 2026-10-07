@@ -752,6 +752,7 @@ struct PromptView: View {
     @State private var text: String = ""
     @FocusState private var focused: Bool
     @State private var showModelPicker = false
+    @State private var showAddMenu = false
 
     var body: some View {
         ZStack(alignment: .leading) {
@@ -833,6 +834,15 @@ struct PromptView: View {
                         .transition(.opacity.combined(with: .scale(scale: 0.95)))
                     }
 
+                    if let plugin = state.activePlugin {
+                        PluginChip(plugin: plugin) {
+                            withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+                                state.activePlugin = nil
+                            }
+                        }
+                        .transition(.opacity.combined(with: .scale(scale: 0.95)))
+                    }
+
                     Spacer()
 
                     HStack(spacing: 4.5) {
@@ -886,32 +896,87 @@ struct PromptView: View {
                 .padding(.horizontal, 4)
 
                 HStack(spacing: 8) {
+                    Button(action: {
+                        showAddMenu.toggle()
+                    }) {
+                        Image(systemName: "plus")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(showAddMenu ? .white : Color(hex: "#9CA3AF"))
+                            .frame(width: 22, height: 22)
+                            .background(showAddMenu ? Color.white.opacity(0.14) : Color.white.opacity(0.06))
+                            .clipShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Add")
+                    .popover(isPresented: $showAddMenu, arrowEdge: .top) {
+                        AddActionMenuView(state: state, text: $text, isPresented: $showAddMenu) {
+                            focused = true
+                        }
+                        .frame(width: 350)
+                    }
+
                     TextField(state.chatHistory.isEmpty ? "Ask me anything…" : "Continue…", text: $text)
                         .textFieldStyle(.plain)
                         .font(.system(size: 13))
                         .focused($focused)
                         .onSubmit { sendMessage() }
 
-                    Button(action: sendMessage) {
-                        Image(systemName: "arrow.up")
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundColor(Color(hex: "#0B0C0E"))
+                    if state.chatHistory.last?.isRunning == true {
+                        Button(action: {
+                            ClaudeService.shared.cancelCurrentChat()
+                            state.stateOverride = nil
+                            if let last = state.chatHistory.indices.last {
+                                state.chatHistory[last].isRunning = false
+                                for i in 0..<state.chatHistory[last].steps.count {
+                                    state.chatHistory[last].steps[i].isDone = true
+                                }
+                            }
+                        }) {
+                            Image(systemName: "stop.fill")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundColor(.white)
+                                .frame(width: 28, height: 28)
+                                .background(Color.white.opacity(0.14))
+                                .clipShape(Circle())
+                                .overlay(
+                                    Circle()
+                                        .stroke(Color.white.opacity(0.2), lineWidth: 0.8)
+                                )
+                        }
+                        .buttonStyle(.plain)
+                        .help("Dừng xử lý")
+                    } else {
+                        Button(action: sendMessage) {
+                            Image(systemName: "arrow.up")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundColor(Color(hex: "#0B0C0E"))
+                        }
+                        .buttonStyle(SendButtonStyle())
+                        .disabled(text.isEmpty)
                     }
-                    .buttonStyle(SendButtonStyle())
-                    .disabled(text.isEmpty)
                 }
-                .padding(.horizontal, 10).padding(.vertical, 6)
-                .background(Color.white.opacity(0.07))
-                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .padding(.horizontal, 10).padding(.vertical, 6.5)
+                .background(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .fill(Color.white.opacity(0.06))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .stroke(Color.white.opacity(0.08), lineWidth: 0.8)
+                )
                 .simultaneousGesture(TapGesture().onEnded { focused = true })
             }
-            .padding(.leading, 84)
+            .padding(.leading, 100)
             .padding(.trailing, 16)
             .padding(.top, 12)
             .padding(.bottom, 14)
         }
         .padding(.bottom, 10)
-        .onAppear { focused = true }
+        .onAppear {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.46) {
+                focused = true
+            }
+        }
         .onChange(of: state.view) { _, view in
             if view == .prompt {
                 state.fetchModelsIfNeeded(for: state.chatProvider)
@@ -929,6 +994,14 @@ struct PromptView: View {
         guard !query.isEmpty else { return }
         text = ""
         focused = false
+        // Stop any previous hanging task
+        ClaudeService.shared.cancelCurrentChat()
+        if let last = state.chatHistory.indices.last, state.chatHistory[last].isRunning {
+            state.chatHistory[last].isRunning = false
+            for i in 0..<state.chatHistory[last].steps.count {
+                state.chatHistory[last].steps[i].isDone = true
+            }
+        }
         UserDefaults.standard.set(false, forKey: "explicitNewSession")
         state.chatHistory.append(ChatMessage(role: .user, content: query))
         state.stateOverride = .thinking
@@ -937,10 +1010,12 @@ struct PromptView: View {
         if case .file = state.promptContext {
             // Keep user-attached file
         } else {
-            if state.activeWindowContext == nil, let fresh = WindowContextCapture.captureActive(), state.dismissedContextKey != fresh.contextKey {
-                state.activeWindowContext = fresh
+            // If user cleared/dismissed context or none was active, do not force-capture
+            if state.promptContext != nil {
+                state.resolveContextWithJev(query: query)
+            } else {
+                state.promptContext = nil
             }
-            state.resolveContextWithJev(query: query)
         }
         #endif
         Task {
@@ -950,6 +1025,306 @@ struct PromptView: View {
     }
 }
 
+// MARK: - Add Action Menu (Codex-style)
+
+struct AddActionMenuView: View {
+    @ObservedObject var state: AppState
+    @Binding var text: String
+    @Binding var isPresented: Bool
+    var onActionSelected: (() -> Void)? = nil
+
+    private var activeAppName: String {
+        state.lastExternalApp?.localizedName ?? "Active App"
+    }
+
+    private var activeAppIcon: AnyView {
+        if let app = state.lastExternalApp, let icon = app.icon {
+            return AnyView(
+                Image(nsImage: icon)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: 15, height: 15)
+                    .clipShape(RoundedRectangle(cornerRadius: 3.5))
+            )
+        } else {
+            return AnyView(
+                Image(systemName: "macwindow.badge.plus")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(Color(hex: "#9CA3AF"))
+            )
+        }
+    }
+
+    var body: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 2) {
+                // Section: Add
+                Text("Add")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(Color(hex: "#6B7280"))
+                    .padding(.horizontal, 10)
+                    .padding(.top, 6)
+                    .padding(.bottom, 2)
+
+                AddActionMenuItem(
+                    icon: AnyView(Image(systemName: "paperclip").font(.system(size: 12.5, weight: .medium)).foregroundColor(Color(hex: "#9CA3AF"))),
+                    title: "Files and folders"
+                ) {
+                    chooseFilesAndFolders()
+                }
+
+                AddActionMenuItem(
+                    icon: activeAppIcon,
+                    title: "Attach \(activeAppName)"
+                ) {
+                    attachActiveApp()
+                }
+
+                AddActionMenuItem(
+                    icon: AnyView(Image(systemName: "folder").font(.system(size: 12.5, weight: .medium)).foregroundColor(Color(hex: "#9CA3AF"))),
+                    title: "Work in a project",
+                    subtitle: "Choose project for new chats"
+                ) {
+                    chooseProject()
+                }
+
+                AddActionMenuItem(
+                    icon: AnyView(Image(systemName: "target").font(.system(size: 12.5, weight: .medium)).foregroundColor(Color(hex: "#9CA3AF"))),
+                    title: "Goal",
+                    subtitle: "Set a goal to keep pursuing"
+                ) {
+                    setGoal()
+                }
+
+                AddActionMenuItem(
+                    icon: AnyView(Image(systemName: "lightbulb").font(.system(size: 12.5, weight: .medium)).foregroundColor(Color(hex: "#9CA3AF"))),
+                    title: "Plan mode",
+                    subtitle: "Turn plan mode on"
+                ) {
+                    togglePlanMode()
+                }
+
+                AddActionMenuItem(
+                    icon: AnyView(Image(systemName: "record.circle").font(.system(size: 12.5, weight: .medium)).foregroundColor(Color(hex: "#9CA3AF"))),
+                    title: "Record a skill"
+                ) {
+                    recordSkill()
+                }
+
+                AddActionMenuItem(
+                    icon: AnyView(Image(systemName: "pencil.and.outline").font(.system(size: 12.5, weight: .medium)).foregroundColor(Color(hex: "#9CA3AF"))),
+                    title: "Sketch",
+                    subtitle: "Draw a sketch"
+                ) {
+                    openSketch()
+                }
+
+                // Section: Plugins (Dynamically discovered from system)
+                if !state.availablePlugins.isEmpty {
+                    Divider()
+                        .opacity(0.15)
+                        .padding(.vertical, 4)
+                        .padding(.horizontal, 6)
+
+                    Text("Plugins")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(Color(hex: "#6B7280"))
+                        .padding(.horizontal, 10)
+                        .padding(.top, 2)
+                        .padding(.bottom, 2)
+
+                    ForEach(state.availablePlugins) { plugin in
+                        AddActionMenuItem(
+                            icon: pluginIconView(plugin),
+                            title: plugin.name,
+                            subtitle: plugin.description.isEmpty ? nil : plugin.description,
+                            isSelected: state.activePlugin?.id == plugin.id
+                        ) {
+                            selectPlugin(plugin)
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, 6)
+            .padding(.vertical, 6)
+        }
+        .frame(maxHeight: 460)
+        .background(Color(hex: "#16171B"))
+        .preferredColorScheme(.dark)
+        .onAppear {
+            state.loadPlugins()
+        }
+    }
+
+    private func pluginIconView(_ plugin: CoucouPlugin) -> AnyView {
+        if let logoPath = plugin.logoPath, let image = NSImage(contentsOfFile: logoPath) {
+            return AnyView(
+                Image(nsImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: 15, height: 15)
+                    .clipShape(RoundedRectangle(cornerRadius: 3))
+            )
+        } else {
+            return AnyView(
+                Image(systemName: plugin.iconSymbol)
+                    .font(.system(size: 12.5, weight: .medium))
+                    .foregroundColor(Color(hex: plugin.brandColor))
+            )
+        }
+    }
+
+    private func chooseFilesAndFolders() {
+        isPresented = false
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            let panel = NSOpenPanel()
+            panel.title = "Select Files or Folders"
+            panel.canChooseFiles = true
+            panel.canChooseDirectories = true
+            panel.allowsMultipleSelection = false
+            panel.showsHiddenFiles = false
+            if panel.runModal() == .OK, let url = panel.url {
+                state.promptContext = .file(name: url.lastPathComponent, fileURL: url)
+                SoundEngine.shared.play("pop")
+                onActionSelected?()
+            }
+        }
+    }
+
+    private func attachActiveApp() {
+        isPresented = false
+        if let targetApp = state.lastExternalApp {
+            if let ctx = WindowContextCapture.captureActive(from: targetApp, fallbackApp: targetApp) {
+                state.promptContext = ctx
+                SoundEngine.shared.play("approve")
+            }
+        } else {
+            if let ctx = WindowContextCapture.captureActive() {
+                state.promptContext = ctx
+                SoundEngine.shared.play("approve")
+            }
+        }
+        onActionSelected?()
+    }
+
+    private func chooseProject() {
+        isPresented = false
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            let panel = NSOpenPanel()
+            panel.title = "Choose Project Folder"
+            panel.prompt = "Choose"
+            panel.canChooseFiles = false
+            panel.canChooseDirectories = true
+            panel.allowsMultipleSelection = false
+            if panel.runModal() == .OK, let url = panel.url {
+                state.promptContext = .file(name: url.lastPathComponent, fileURL: url)
+                SoundEngine.shared.play("pop")
+                onActionSelected?()
+            }
+        }
+    }
+
+    private func setGoal() {
+        isPresented = false
+        if !text.hasPrefix("/goal") {
+            text = text.isEmpty ? "/goal " : "/goal " + text
+        }
+        SoundEngine.shared.play("pop")
+        onActionSelected?()
+    }
+
+    private func togglePlanMode() {
+        isPresented = false
+        if !text.hasPrefix("/plan") {
+            text = text.isEmpty ? "/plan " : "/plan " + text
+        }
+        SoundEngine.shared.play("pop")
+        onActionSelected?()
+    }
+
+    private func recordSkill() {
+        isPresented = false
+        if !text.hasPrefix("/skill") {
+            text = text.isEmpty ? "/skill " : "/skill " + text
+        }
+        SoundEngine.shared.play("pop")
+        onActionSelected?()
+    }
+
+    private func openSketch() {
+        isPresented = false
+        if !text.hasPrefix("/sketch") {
+            text = text.isEmpty ? "/sketch " : "/sketch " + text
+        }
+        SoundEngine.shared.play("pop")
+        onActionSelected?()
+    }
+
+    private func selectPlugin(_ plugin: CoucouPlugin) {
+        isPresented = false
+        if state.activePlugin?.id == plugin.id {
+            state.activePlugin = nil
+            SoundEngine.shared.play("pop")
+        } else {
+            state.activePlugin = plugin
+            let tag = "[\(plugin.name)] "
+            if !text.contains(tag) {
+                text = tag + text
+            }
+            SoundEngine.shared.play("approve")
+        }
+        onActionSelected?()
+    }
+}
+
+struct AddActionMenuItem: View {
+    let icon: AnyView
+    let title: String
+    var subtitle: String? = nil
+    var isSelected: Bool = false
+    let action: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 9) {
+                icon
+                    .frame(width: 18, height: 18)
+
+                HStack(spacing: 8) {
+                    Text(title)
+                        .font(.system(size: 12.5, weight: .medium))
+                        .foregroundColor(Color(hex: "#F3F4F6"))
+
+                    if let subtitle = subtitle {
+                        Text(subtitle)
+                            .font(.system(size: 11.5, weight: .regular))
+                            .foregroundColor(Color(hex: "#8E929E"))
+                            .lineLimit(1)
+                    }
+                }
+
+                Spacer(minLength: 4)
+
+                if isSelected {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(Color(hex: "#10B981"))
+                        .padding(.trailing, 2)
+                }
+            }
+            .padding(.horizontal, 9)
+            .padding(.vertical, 5.5)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(isSelected ? Color.white.opacity(0.12) : (isHovered ? Color.white.opacity(0.08) : Color.clear))
+            )
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+    }
+}
 
 // MARK: - Model / provider picker
 
@@ -1173,6 +1548,15 @@ struct AssistantWorkTrailView: View {
     let rawThinking: String?
     @State private var isExpanded: Bool = false
 
+    private func cleanStepTitle(_ raw: String) -> String {
+        raw.replacingOccurrences(of: " (bộ nhớ đệm ⚡️)", with: "")
+           .replacingOccurrences(of: "(bộ nhớ đệm ⚡️)", with: "")
+           .replacingOccurrences(of: " (bộ nhớ đệm)", with: "")
+           .replacingOccurrences(of: "(bộ nhớ đệm)", with: "")
+           .replacingOccurrences(of: "⚡️", with: "")
+           .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     var body: some View {
         if steps.isEmpty && (rawThinking == nil || rawThinking?.isEmpty == true) {
             EmptyView()
@@ -1185,7 +1569,7 @@ struct AssistantWorkTrailView: View {
                     HStack(alignment: .center, spacing: 6) {
                         StepDotDoneView()
 
-                        Text(step.title)
+                        Text(cleanStepTitle(step.title))
                             .font(.system(size: 11, weight: .medium))
                             .foregroundColor(Color(hex: "#8E939C"))
 
@@ -1204,7 +1588,7 @@ struct AssistantWorkTrailView: View {
                 HStack(alignment: .center, spacing: 6) {
                     StepDotRunningView()
 
-                    Text(activeStep?.title ?? "Đang xử lý")
+                    Text(cleanStepTitle(activeStep?.title ?? "Đang xử lý"))
                         .font(.system(size: 11, weight: .medium))
                         .foregroundColor(Color(hex: "#F4F4F5"))
                         .shimmerSweep()
@@ -1266,7 +1650,7 @@ struct AssistantWorkTrailView: View {
                                         .padding(.top, 1)
 
                                     VStack(alignment: .leading, spacing: 2) {
-                                        Text(step.title)
+                                        Text(cleanStepTitle(step.title))
                                             .font(.system(size: 10.5, weight: .medium))
                                             .foregroundColor(Color(hex: "#D4D4D8"))
 
@@ -1637,11 +2021,147 @@ struct MarkdownContentView: View {
     }
 }
 
+// MARK: - Plugin Badge Chip (User Chat Bubble)
+
+struct PluginBadgeChip: View {
+    let name: String
+    let plugin: CoucouPlugin?
+
+    var body: some View {
+        HStack(spacing: 4.5) {
+            if let plugin = plugin {
+                if let logoPath = plugin.logoPath, let image = NSImage(contentsOfFile: logoPath) {
+                    Image(nsImage: image)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(width: 12, height: 12)
+                        .clipShape(RoundedRectangle(cornerRadius: 2.5))
+                } else {
+                    Image(systemName: plugin.iconSymbol)
+                        .font(.system(size: 9.5, weight: .semibold))
+                        .foregroundColor(Color(hex: plugin.brandColor))
+                }
+            } else if name == "/goal" {
+                Image(systemName: "target")
+                    .font(.system(size: 9.5, weight: .semibold))
+                    .foregroundColor(Color(hex: "#F59E0B"))
+            } else if name == "/plan" {
+                Image(systemName: "lightbulb")
+                    .font(.system(size: 9.5, weight: .semibold))
+                    .foregroundColor(Color(hex: "#3B82F6"))
+            } else if name == "/search" {
+                Image(systemName: "globe")
+                    .font(.system(size: 9.5, weight: .semibold))
+                    .foregroundColor(Color(hex: "#10B981"))
+            } else {
+                Image(systemName: "puzzlepiece.extension")
+                    .font(.system(size: 9.5, weight: .semibold))
+                    .foregroundColor(Color(hex: "#8B5CF6"))
+            }
+
+            Text(displayName)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(Color(hex: "#F3F4F6"))
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 2.5)
+        .background(
+            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                .fill(chipBackgroundColor)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                .stroke(chipBorderColor, lineWidth: 0.8)
+        )
+    }
+
+    private var displayName: String {
+        if let plugin = plugin {
+            return plugin.name
+        }
+        return name
+    }
+
+    private var chipBackgroundColor: Color {
+        Color.white.opacity(0.08)
+    }
+
+    private var chipBorderColor: Color {
+        Color.white.opacity(0.24)
+    }
+}
+
 struct ChatBubble: View {
     let message: ChatMessage
     @ObservedObject var state: AppState
     @State private var isHovered: Bool = false
     @State private var copied: Bool = false
+
+    @ViewBuilder
+    private var userMessageBubble: some View {
+        let parsed = parseTaggedMessage(message.content)
+        if let tag = parsed.tag {
+            let plugin = findPlugin(named: tag)
+            if parsed.remaining.isEmpty {
+                PluginBadgeChip(name: tag, plugin: plugin)
+            } else if parsed.remaining.contains("\n") || parsed.remaining.count > 50 {
+                VStack(alignment: .leading, spacing: 4.5) {
+                    PluginBadgeChip(name: tag, plugin: plugin)
+                    Text(parsed.remaining)
+                        .font(.system(size: 12.5))
+                        .foregroundColor(Color(hex: "#F1F2F4"))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            } else {
+                HStack(alignment: .center, spacing: 6) {
+                    PluginBadgeChip(name: tag, plugin: plugin)
+                    Text(parsed.remaining)
+                        .font(.system(size: 12.5))
+                        .foregroundColor(Color(hex: "#F1F2F4"))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        } else {
+            Text(message.content)
+                .font(.system(size: 12.5))
+                .foregroundColor(Color(hex: "#F1F2F4"))
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func parseTaggedMessage(_ text: String) -> (tag: String?, remaining: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // [TagName] text...
+        if trimmed.hasPrefix("["), let closeIdx = trimmed.firstIndex(of: "]") {
+            let tagStart = trimmed.index(after: trimmed.startIndex)
+            let tag = String(trimmed[tagStart..<closeIdx]).trimmingCharacters(in: .whitespaces)
+            let remStart = trimmed.index(after: closeIdx)
+            let remaining = String(trimmed[remStart...]).trimmingCharacters(in: .whitespaces)
+            if !tag.isEmpty {
+                return (tag, remaining)
+            }
+        }
+
+        // Slash command prefixes: /goal, /plan, /search, /skill, /sketch
+        let commands = ["/goal", "/plan", "/search", "/skill", "/sketch"]
+        for cmd in commands {
+            if trimmed.hasPrefix(cmd + " ") || trimmed == cmd {
+                let rem = trimmed.dropFirst(cmd.count).trimmingCharacters(in: .whitespaces)
+                return (cmd, String(rem))
+            }
+        }
+
+        return (nil, trimmed)
+    }
+
+    private func findPlugin(named tag: String) -> CoucouPlugin? {
+        state.availablePlugins.first {
+            $0.name.caseInsensitiveCompare(tag) == .orderedSame ||
+            $0.id.caseInsensitiveCompare(tag) == .orderedSame
+        }
+    }
 
     var body: some View {
         HStack(alignment: .top) {
@@ -1663,10 +2183,7 @@ struct ChatBubble: View {
                         .help("Sao chép câu hỏi")
                     }
 
-                    Text(message.content)
-                        .font(.system(size: 12.5))
-                        .foregroundColor(Color(hex: "#F1F2F4"))
-                        .fixedSize(horizontal: false, vertical: true)
+                    userMessageBubble
                         .padding(.horizontal, 10).padding(.vertical, 6)
                         .background(Color.white.opacity(0.13))
                         .clipShape(RoundedRectangle(cornerRadius: 12))
@@ -3415,13 +3932,14 @@ struct CardBackground<Content: View>: View {
 
     let wash: Wash?
     let content: (() -> Content)?
+    @ObservedObject private var state: AppState = AppState.shared
 
     init(wash: Wash?, @ViewBuilder content: @escaping () -> Content) {
         self.wash = wash
         self.content = content
     }
 
-    var washColor: Color {
+    var defaultWashColor: Color {
         switch wash {
         case .red:    return Color(hex: "#F4505E").opacity(0.55)
         case .green:  return Color(hex: "#34D399").opacity(0.5)
@@ -3434,25 +3952,91 @@ struct CardBackground<Content: View>: View {
         }
     }
 
+    var effectiveBloomColor: Color {
+        // Tùy state mà đổi màu các effect, default giữ màu hiện tại của view
+        switch state.effectiveState {
+        case .error:
+            return Color(hex: "#EF4444").opacity(0.55) // Coral red bloom (Grokbot video Frame 25 & 30)
+        case .thinking:
+            return Color(hex: "#8B5CF6").opacity(0.44) // Violet bloom
+        case .working:
+            return Color(hex: "#0EA5E9").opacity(0.40) // Cyan working bloom
+        case .approval:
+            return Color(hex: "#F5A524").opacity(0.45) // Amber bloom
+        case .finished:
+            return Color(hex: "#10B981").opacity(0.45) // Mint green bloom
+        case .dizzy:
+            return Color(hex: "#EC4899").opacity(0.45)
+        case .ratelimit:
+            return Color(hex: "#F97316").opacity(0.45)
+        case .searching:
+            return Color(hex: "#6366F1").opacity(0.42)
+        case .question:
+            return Color(hex: "#06B6D4").opacity(0.40)
+        default:
+            // Idle / Normal: giữ default màu wash hiện tại
+            return defaultWashColor
+        }
+    }
+
     var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 20)
-                .fill(Color(hex: "#141518"))
-                .overlay(
+        let cardRadius: CGFloat = state.coucouPosition == .notch ? 18 : 20
+        return ZStack {
+            // Nền chính của card bên trong: giữ default là màu hiện tại
+            RoundedRectangle(cornerRadius: cardRadius, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            Color(hex: "#121318"),
+                            Color(hex: "#0C0D11")
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+
+            // Effect 1: Bottom Ambient Bloom (tùy state mà đổi màu, dâng từ mép đáy card bên trong)
+            RoundedRectangle(cornerRadius: cardRadius, style: .continuous)
+                .fill(
                     RadialGradient(
                         gradient: Gradient(stops: [
-                            .init(color: washColor, location: 0),
-                            .init(color: .clear, location: 0.7)
+                            .init(color: effectiveBloomColor, location: 0),
+                            .init(color: effectiveBloomColor.opacity(0.45), location: 0.35),
+                            .init(color: .clear, location: 0.78)
                         ]),
-                        center: UnitPoint(x: 0.5, y: 1.3),
+                        center: UnitPoint(x: 0.5, y: 1.15),
                         startRadius: 0,
                         endRadius: 280
                     )
-                    .clipShape(RoundedRectangle(cornerRadius: 20))
                 )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 20)
-                        .stroke(Color.white.opacity(0.035), lineWidth: 1)
+                .animation(.easeInOut(duration: 0.38), value: state.effectiveState)
+
+            // Effect 2: Top Specular Glass Sheen (phản quang kính mờ trên mép trên card bên trong)
+            RoundedRectangle(cornerRadius: cardRadius, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        stops: [
+                            .init(color: Color.white.opacity(0.06), location: 0.0),
+                            .init(color: Color.white.opacity(0.015), location: 0.18),
+                            .init(color: .clear, location: 0.42)
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+
+            // Effect 3: Specular Rim Stroke viền bo góc tinh xảo
+            RoundedRectangle(cornerRadius: cardRadius, style: .continuous)
+                .stroke(
+                    LinearGradient(
+                        stops: [
+                            .init(color: Color.white.opacity(0.12), location: 0),
+                            .init(color: Color.white.opacity(0.04), location: 1)
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    ),
+                    lineWidth: 0.85
                 )
 
             if let content = content {
@@ -3469,25 +4053,45 @@ extension CardBackground where Content == EmptyView {
     }
 
     var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 20)
+        let cardRadius: CGFloat = state.coucouPosition == .notch ? 18 : 20
+        return ZStack {
+            // Nền chính của card bên trong: giữ default là màu hiện tại
+            RoundedRectangle(cornerRadius: cardRadius)
                 .fill(Color(hex: "#141518"))
-                .overlay(
+
+            // Effect 1: Bottom Ambient Bloom theo state
+            RoundedRectangle(cornerRadius: cardRadius)
+                .fill(
                     RadialGradient(
                         gradient: Gradient(stops: [
-                            .init(color: washColor, location: 0),
-                            .init(color: .clear, location: 0.7)
+                            .init(color: effectiveBloomColor, location: 0),
+                            .init(color: effectiveBloomColor.opacity(0.45), location: 0.35),
+                            .init(color: .clear, location: 0.75)
                         ]),
-                        center: UnitPoint(x: 0.5, y: 1.3),
+                        center: UnitPoint(x: 0.5, y: 1.2),
                         startRadius: 0,
                         endRadius: 280
                     )
-                    .clipShape(RoundedRectangle(cornerRadius: 20))
                 )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 20)
-                        .stroke(Color.white.opacity(0.035), lineWidth: 1)
+                .animation(.easeInOut(duration: 0.38), value: state.effectiveState)
+
+            // Effect 2: Top Specular Glass Sheen
+            RoundedRectangle(cornerRadius: cardRadius)
+                .fill(
+                    LinearGradient(
+                        stops: [
+                            .init(color: Color.white.opacity(0.05), location: 0.0),
+                            .init(color: Color.white.opacity(0.012), location: 0.18),
+                            .init(color: .clear, location: 0.40)
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
                 )
+
+            // Effect 3: Viền bo góc
+            RoundedRectangle(cornerRadius: cardRadius)
+                .stroke(Color.white.opacity(0.04), lineWidth: 1)
         }
     }
 }
@@ -3619,6 +4223,59 @@ struct ContextChip: View {
         .overlay(
             RoundedRectangle(cornerRadius: 5.5)
                 .stroke(Color.white.opacity(0.08), lineWidth: 0.8)
+        )
+    }
+}
+
+// MARK: - Active Plugin Chip
+
+struct PluginChip: View {
+    let plugin: CoucouPlugin
+    var onRemove: (() -> Void)? = nil
+    @State private var isHoveringClose = false
+
+    var body: some View {
+        HStack(spacing: 5) {
+            if let logoPath = plugin.logoPath, let image = NSImage(contentsOfFile: logoPath) {
+                Image(nsImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: 12, height: 12)
+                    .clipShape(RoundedRectangle(cornerRadius: 2.5))
+            } else {
+                Image(systemName: plugin.iconSymbol)
+                    .font(.system(size: 9.5, weight: .medium))
+                    .foregroundColor(Color(hex: plugin.brandColor))
+            }
+
+            Text(plugin.name)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(Color(hex: "#F4F4F5"))
+                .lineLimit(1)
+                .truncationMode(.tail)
+
+            if let onRemove = onRemove {
+                Button(action: onRemove) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 7.5, weight: .semibold))
+                        .foregroundColor(Color(hex: isHoveringClose ? "#EF4444" : "#71717A"))
+                        .padding(2)
+                        .background(Color.white.opacity(isHoveringClose ? 0.12 : 0))
+                        .clipShape(RoundedRectangle(cornerRadius: 3))
+                }
+                .buttonStyle(.plain)
+                .onHover { h in isHoveringClose = h }
+                .help("Tắt plugin")
+            }
+        }
+        .padding(.leading, 7)
+        .padding(.trailing, onRemove != nil ? 4 : 7)
+        .padding(.vertical, 3.5)
+        .background(Color.white.opacity(0.06))
+        .clipShape(RoundedRectangle(cornerRadius: 5.5))
+        .overlay(
+            RoundedRectangle(cornerRadius: 5.5)
+                .stroke(Color.white.opacity(0.18), lineWidth: 0.8)
         )
     }
 }
@@ -3904,7 +4561,7 @@ struct SettingsIslandView: View {
                     Text("Sound")
                         .font(.system(size: 12.5))
                         .foregroundColor(Color(hex: "#C5C8CD"))
-                    Slider(value: $state.soundVolume, in: 0...0.2)
+                    Slider(value: $state.soundVolume, in: 0...1.0)
                         .frame(width: 72)
                         .opacity(state.soundEnabled ? 1 : 0.4)
                 }
@@ -3948,6 +4605,54 @@ struct SettingsIslandView: View {
                         .toggleStyle(.switch)
                         .labelsHidden()
                         .scaleEffect(0.75)
+                }
+
+                // Screen position row
+                HStack(spacing: 10) {
+                    Image(systemName: "macwindow.on.rectangle")
+                        .font(.system(size: 12))
+                        .foregroundColor(Color(hex: "#8E939C"))
+                        .frame(width: 16)
+                    Text("Vị trí hiển thị")
+                        .font(.system(size: 12))
+                        .foregroundColor(Color(hex: "#C5C8CD"))
+                    Spacer()
+                    Menu {
+                        ForEach(CoucouPosition.allCases) { pos in
+                            Button {
+                                withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                                    state.coucouPosition = pos
+                                }
+                            } label: {
+                                HStack {
+                                    if state.coucouPosition == pos {
+                                        Image(systemName: "checkmark")
+                                    }
+                                    Text(pos.displayName)
+                                }
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: 4.5) {
+                            Image(systemName: state.coucouPosition.iconSymbol)
+                                .font(.system(size: 10))
+                            Text(state.coucouPosition.displayName)
+                                .font(.system(size: 11, weight: .medium))
+                            Image(systemName: "chevron.up.chevron.down")
+                                .font(.system(size: 7.5))
+                                .foregroundColor(Color(hex: "#71717A"))
+                        }
+                        .foregroundColor(Color(hex: "#F4F4F5"))
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3.5)
+                        .background(Color.white.opacity(0.06))
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6)
+                                .stroke(Color.white.opacity(0.12), lineWidth: 0.8)
+                        )
+                    }
+                    .menuStyle(.borderlessButton)
                 }
 
                 // Connection status

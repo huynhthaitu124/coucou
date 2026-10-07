@@ -62,6 +62,7 @@ struct BotStateCfg {
 
 enum EyeShape: String {
     case pill, wide, dot, line, flat, happy, closed, spiral, heart, star, tired, wink, cup
+    case annoyed, focused
 }
 
 enum BadgeType {
@@ -71,42 +72,43 @@ enum BadgeType {
     case dot(CGColor)
 }
 
-// MARK: - Mochi track constants (from PISTES.mochi)
+// MARK: - Mochi track constants (from PISTES.mochi & Grokbot case study)
 
 enum MochiConst {
-    static let eyeW: CGFloat  = 0.25
-    static let eyeH: CGFloat  = 0.27
-    static let eyeSp: CGFloat = 0.37
-    static let eyeP: CGFloat  = -0.12
-    static let baseTop    = CGColor(red: 0.929, green: 0.929, blue: 0.937, alpha: 1)  // #EDEDEF
-    static let baseBottom = CGColor(red: 0.769, green: 0.773, blue: 0.792, alpha: 1)  // #C4C5CA
-    static let ink        = CGColor(red: 0.102, green: 0.082, blue: 0.071, alpha: 1)  // #1A1412
-    static let miniInk    = CGColor(red: 0.063, green: 0.075, blue: 0.102, alpha: 1)  // #10131A
+    static let eyeW: CGFloat  = 0.26
+    static let eyeH: CGFloat  = 0.58
+    static let eyeSp: CGFloat = 0.30
+    static let eyeP: CGFloat  = -0.02
+    static let baseTop    = CGColor(red: 0.941, green: 0.949, blue: 0.961, alpha: 1)  // #F0F2F5
+    static let baseBottom = CGColor(red: 0.784, green: 0.804, blue: 0.835, alpha: 1)  // #C8CDD5
+    static let ink        = CGColor(red: 0.039, green: 0.043, blue: 0.055, alpha: 1)  // #0A0B0E obsidian
+    static let miniInk    = CGColor(red: 0.039, green: 0.043, blue: 0.055, alpha: 1)  // #0A0B0E obsidian
 }
 
 // MARK: - Bot state configs
 
 let BotStates: [BotState: BotStateCfg] = [
     .idle: BotStateCfg(
-        color: CGColor(red:0.902,green:0.914,blue:0.933,alpha:1), tint:0,
-        eye:.pill, badge:nil,
-        badgeColor: .white, glow: CGColor(red:1,green:1,blue:1,alpha:0.35), glowOpacity:0.25,
-        bounces:false, scans:false, breathes:false, zz:false, sweat:false,
-        look:nil, tilt:0, sound:nil),
+        color: CGColor(red: 0.055, green: 0.647, blue: 0.914, alpha: 1), tint: 0.22,
+        eye: .pill, badge: nil,
+        badgeColor: .white,
+        glow: CGColor(red: 0.055, green: 0.647, blue: 0.914, alpha: 1), glowOpacity: 0.45,
+        bounces: false, scans: false, breathes: true, zz: false, sweat: false,
+        look: nil, tilt: 0, sound: nil),
     .working: BotStateCfg(
         color: CGColor(red:0.231,green:0.620,blue:1,alpha:1), tint:0.72,
-        eye:.pill, badge:.dots(CGColor(red:0.231,green:0.620,blue:1,alpha:1)),
+        eye:.focused, badge:.dots(CGColor(red:0.231,green:0.620,blue:1,alpha:1)),
         badgeColor: CGColor(red:0.231,green:0.620,blue:1,alpha:1),
         glow: CGColor(red:0.231,green:0.620,blue:1,alpha:1), glowOpacity:0.55,
-        bounces:false, scans:false, breathes:false, zz:false, sweat:false,
+        bounces:false, scans:false, breathes:true, zz:false, sweat:false,
         look:nil, tilt:0, sound:"work"),
     .thinking: BotStateCfg(
-        color: CGColor(red:0.545,green:0.361,blue:0.965,alpha:1), tint:0.72,
-        eye:.pill, badge:.dots(CGColor(red:0.545,green:0.361,blue:0.965,alpha:1)),
-        badgeColor: CGColor(red:0.545,green:0.361,blue:0.965,alpha:1),
-        glow: CGColor(red:0.545,green:0.361,blue:0.965,alpha:1), glowOpacity:0.5,
-        bounces:false, scans:false, breathes:false, zz:false, sweat:false,
-        look: CGPoint(x:0.55, y:0.55), tilt:0, sound:"think"),
+        color: CGColor(red: 0.055, green: 0.647, blue: 0.914, alpha: 1), tint: 0.72,
+        eye: .focused, badge: .dots(CGColor(red: 0.055, green: 0.647, blue: 0.914, alpha: 1)),
+        badgeColor: CGColor(red: 0.055, green: 0.647, blue: 0.914, alpha: 1),
+        glow: CGColor(red: 0.055, green: 0.647, blue: 0.914, alpha: 1), glowOpacity: 0.5,
+        bounces: false, scans: false, breathes: true, zz: false, sweat: false,
+        look: CGPoint(x: 0.25, y: 0.20), tilt: 0, sound: "think"),
     .searching: BotStateCfg(
         color: CGColor(red:0.388,green:0.396,blue:0.949,alpha:1), tint:0.72,
         eye:.pill, badge:.dots(CGColor(red:0.388,green:0.396,blue:0.949,alpha:1)),
@@ -177,6 +179,9 @@ final class BotEngine: ObservableObject {
     var pitch:  CGFloat = 0
     var roll:   CGFloat = 0
     var tilt:   CGFloat = 0
+    var yawVel:   CGFloat = 0       // 2nd-order spring velocity
+    var pitchVel: CGFloat = 0
+    var tiltVel:  CGFloat = 0
     var open:   CGFloat = 1          // eye open amount
     var sx:     CGFloat = 1          // scale X
     var sy:     CGFloat = 1          // scale Y
@@ -188,6 +193,10 @@ final class BotEngine: ObservableObject {
     var blush:  CGFloat = 0
     var es:     CGFloat = 1          // eye scale
     var badgeS: CGFloat = 0          // badge scale
+
+    // Hover state & pill badge expansion
+    var isHovered: Bool = false
+    var hoverPillProgress: CGFloat = 0
 
     // Targets
     var tgYaw:    CGFloat = 0
@@ -356,26 +365,57 @@ final class BotEngine: ObservableObject {
         blink()
     }
 
-    // MARK: - Slap (dizzy mechanic)
+    // MARK: - Slap (3-stage escalating reaction mechanic as in Grok Bot)
 
     func slap() {
         interruptGreet()
         guard state != .dizzy else { return }
         let now = CACurrentMediaTime()
-        slapTimes = slapTimes.filter { now - $0 < 1.7 }
+        slapTimes = slapTimes.filter { now - $0 < 2.2 }
         slapTimes.append(now)
-        SoundEngine.shared.play("slap")
-        squash()
-        if slapTimes.count >= 3 {
+        let hitCount = slapTimes.count
+
+        if hitCount >= 3 {
+            // Hit 3: Dizzy State!
             slapTimes = []
+            SoundEngine.shared.play("slap")
+            doRoll(duration: 1400, turns: 2)
+            emit(.star, count: 6)
             NotificationCenter.default.post(name: .botDizzy, object: nil)
-        } else {
-            // Annoyed: line eyes for 800ms, annoyed sound after 60ms delay
-            eyeOverride = .line
-            eyeOverrideUntil = now + 0.8
+        } else if hitCount == 2 {
+            // Hit 2: Annoyed / Grumpy!
+            SoundEngine.shared.play("slap")
+            anim("tilt", keys: [
+                TweenKey(target: -0.16, duration: 60, ease: Ease.out),
+                TweenKey(target: 0.15, duration: 90, ease: Ease.inOut),
+                TweenKey(target: -0.09, duration: 90, ease: Ease.inOut),
+                TweenKey(target: 0, duration: 120, ease: Ease.out),
+            ])
+            squash()
+            eyeOverride = .annoyed
+            eyeOverrideUntil = now + 1.2
+            emit(.sweat, count: 1)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) {
                 SoundEngine.shared.play("annoyed")
             }
+        } else {
+            // Hit 1: Surprised Flinch!
+            SoundEngine.shared.play("slap")
+            anim("sy", keys: [
+                TweenKey(target: 0.76, duration: 60, ease: Ease.out),
+                TweenKey(target: 1.18, duration: 120, ease: Ease.out),
+                TweenKey(target: 0.94, duration: 120, ease: Ease.inOut),
+                TweenKey(target: 1.0, duration: 150, ease: Ease.back),
+            ])
+            anim("sx", keys: [
+                TweenKey(target: 1.24, duration: 60, ease: Ease.out),
+                TweenKey(target: 0.88, duration: 120, ease: Ease.out),
+                TweenKey(target: 1.05, duration: 120, ease: Ease.inOut),
+                TweenKey(target: 1.0, duration: 150, ease: Ease.back),
+            ])
+            eyeOverride = .wide
+            eyeOverrideUntil = now + 0.65
+            blink()
         }
     }
 
@@ -680,6 +720,12 @@ final class BotEngine: ObservableObject {
             ty = sin(t * 2.6) * 0.6
             tp = -0.06
         }
+        if state == .thinking {
+            // Elegant thoughtful gaze: eyes gently float upward-right with organic contemplation orbit
+            ty = 0.22 + sin(t * 1.5) * 0.10
+            tp = 0.20 + cos(t * 1.8) * 0.08
+            tgTilt = sin(t * 1.2) * 0.02
+        }
         if state == .sleeping { ty = 0; tp = -0.14 }
         if state == .dizzy    { ty = sin(t * 9) * 0.25 }
 
@@ -727,16 +773,55 @@ final class BotEngine: ObservableObject {
             doMiniBehaviorLoop()
         }
 
-        // Smooth look
-        let kLook = CGFloat(1 - pow(0.0025, dt))
-        let kGen  = CGFloat(1 - pow(0.0008, dt))
+        // 2nd-order critically-damped spring damper for organic, silky-smooth look tracking
+        // Matches Rive "Following cursor with a delay" (Benji Taylor / Novra case study)
+        let dtSafe = min(0.04, max(0.001, dt))
+        let omega: CGFloat = 16.0    // Natural frequency (rad/s) — crisp responsive tracking
+        let zeta: CGFloat  = 0.96    // Damping ratio — critically damped with buttery settle
+        let kGen  = CGFloat(1 - pow(0.0008, dtSafe))
 
-        if !locks.contains("yaw")   { yaw   += (tgYaw   - yaw)   * kLook }
-        if !locks.contains("pitch") { pitch += (tgPitch  - pitch) * kLook }
-        if !locks.contains("tilt")  { tilt  += (tgTilt   - tilt)  * kGen  }
+        if !locks.contains("yaw") {
+            let accYaw = omega * omega * (tgYaw - yaw) - 2 * zeta * omega * yawVel
+            yawVel += accYaw * dtSafe
+            yaw += yawVel * dtSafe
+            if yaw.isNaN || yaw.isInfinite { yaw = 0; yawVel = 0 }
+        } else {
+            yawVel = 0
+        }
+
+        if !locks.contains("pitch") {
+            let accPitch = omega * omega * (tgPitch - pitch) - 2 * zeta * omega * pitchVel
+            pitchVel += accPitch * dtSafe
+            pitch += pitchVel * dtSafe
+            if pitch.isNaN || pitch.isInfinite { pitch = 0; pitchVel = 0 }
+        } else {
+            pitchVel = 0
+        }
+
+        if !locks.contains("tilt") {
+            let targetTilt = tgTilt + yaw * 0.08
+            tilt += (targetTilt - tilt) * kGen
+            if tilt.isNaN || tilt.isInfinite { tilt = 0; tiltVel = 0 }
+        }
+
         if !locks.contains("sy")    { sy    += (tgSy     - sy)    * kGen  }
         if !locks.contains("sx")    { sx    += (tgSx     - sx)    * kGen  }
         if !locks.contains("es")    { es    += (tgEs     - es)    * kGen  }
+
+        // Hands visibility: hands ONLY emerge during greeting wave or finished celebration, otherwise tucked away
+        if !isMini {
+            let isWaving = now >= waveStart && waveStart > 0 && now < waveUntil
+            let wantsHands = (isWaving || state == .finished) && morph < 0.25
+            let handsTarget: CGFloat = wantsHands ? 1.0 : 0.0
+            if tweens["hands"] == nil {
+                hands += (handsTarget - hands) * CGFloat(1 - pow(0.0001, dtSafe))
+            }
+        }
+
+        // Animate hover pill progress smoothly
+        let tgHover: CGFloat = (isHovered && cfg.badge != nil && morph < 0.25) ? 1.0 : 0.0
+        let kPill = CGFloat(1 - pow(0.0001, dtSafe))
+        hoverPillProgress += (tgHover - hoverPillProgress) * kPill
 
         // Animate color
         col = mixColor(col, colT, 1 - pow(0.002, dt))
@@ -786,8 +871,9 @@ final class BotEngine: ObservableObject {
         let W = size.width
         let H = size.height
         let R = W * 0.3
-        let rx = R * 1.14
-        let ry = R * 0.88
+        // Pure circular sphere geometry matching Grokbot (1:1 ratio)
+        let rx = R
+        let ry = R
 
         let cx = W / 2 + ox * R
         // particleOverhang shifts the bot body down in canvas coords so hearts can fly into
@@ -862,112 +948,25 @@ final class BotEngine: ObservableObject {
         // (We'll pass world-space cx/cy to these helpers)
     }
 
-    // MARK: - Draw hands behind body (called before draw() so hands appear under Mochi)
+    // MARK: - Draw hands (Grokbot flexible floating hands with state gestures)
+
+    private enum HandLayer { case behind, inFront }
 
     func drawHandsBehind(context: GraphicsContext, size: CGSize) {
-        guard hands > 0.01, !isMini else { return }
-        let W = size.width, H = size.height
-        let R = W * 0.3
-        // Only draw hands when Mochi is large enough to be meaningful (not compact/peek)
-        guard R > 14 else { return }
-        let rx = R * 1.14
-        let ry = R * 0.88
-        let cx = W / 2 + ox * R
-        let cy = H / 2 + particleOverhang / 2 + oy * R + R * 0.06
-
-        let now = CACurrentMediaTime()
-        let bodyH = 2 * ry   // full body height
-
-        // Hand ellipse half-dims: 0.30×bodyH wide, 0.26×bodyH tall (scaled by hands 0→1)
-        let hew = 0.30 * ry * hands   // half-width
-        let heh = 0.26 * ry * hands   // half-height
-
-        // Body half-dims with current squash scale
-        let hwB = rx * sx
-        let hhB = ry * sy
-
-        let isWaving = now >= waveStart && waveStart > 0 && now < waveUntil
-
-        for sd in [-1.0, 1.0] {
-            var localX: CGFloat
-            var localY: CGFloat
-            var handRot: CGFloat = 0
-
-            if sd > 0 && isWaving {
-                // Right hand: rise to wave position over first 180ms, then oscillate
-                let wt = CGFloat(now - waveStart)
-                let rise = min(1.0, wt / 0.18)
-                let riseEased: CGFloat = 1 - pow(1 - rise, 3)   // easeOut cubic
-
-                // Rest position is lower-side; wave position is upper-side (at eye height)
-                let restX: CGFloat = hwB * 1.08
-                let restY: CGFloat = hhB * 0.70
-                let oscX = cos(13 * wt) * 0.06 * bodyH
-                let oscY = -sin(13 * wt) * 0.14 * bodyH
-                let waveX: CGFloat = hwB * 1.10 + oscX
-                let waveY: CGFloat = -hhB * 0.15 + oscY
-                localX = restX + (waveX - restX) * riseEased
-                localY = restY + (waveY - restY) * riseEased
-                handRot = (-0.5 + sin(13 * wt) * 0.35) * riseEased
-
-            } else if sd < 0 && isWaving {
-                // Left hand: gentle sway at rest position
-                let wt = CGFloat(now - waveStart)
-                localX = -hwB * 1.08
-                localY = hhB * 0.70 + sin(6 * wt) * 0.04 * bodyH
-
-            } else {
-                // Rest: lower-side, clearly peeking behind body bottom
-                localX = CGFloat(sd) * hwB * 1.08
-                localY = hhB * 0.70
-            }
-
-            // Apply body tilt to get world position
-            let cosT = cos(tilt), sinT = sin(tilt)
-            let worldX = cx + cosT * localX - sinT * localY
-            let worldY = cy + sinT * localX + cosT * localY
-
-            // Draw
-            var handCtx = context
-            handCtx.translateBy(x: worldX, y: worldY)
-            if handRot != 0 { handCtx.rotate(by: .radians(handRot)) }
-
-            let handRect = CGRect(x: -hew, y: -heh, width: hew * 2, height: heh * 2)
-            var handPath = Path()
-            handPath.addEllipse(in: handRect)
-
-            // Fill with body material (same gradient as body)
-            if let bc = bodyColor {
-                let c0 = mix3(cgColorToTuple(bc), (1, 1, 1), 0.35)
-                let c1 = cgColorToTuple(bc)
-                handCtx.fill(handPath, with: .linearGradient(
-                    Gradient(colors: [colorFromTuple(c0), colorFromTuple(c1)]),
-                    startPoint: CGPoint(x: hew * 0.7, y: -heh * 0.85),
-                    endPoint: CGPoint(x: -hew * 0.8, y: heh * 0.9)
-                ))
-            } else {
-                let c0 = cgColorToTuple(MochiConst.baseTop)
-                let c1 = cgColorToTuple(MochiConst.baseBottom)
-                handCtx.fill(handPath, with: .linearGradient(
-                    Gradient(colors: [colorFromTuple(c0), colorFromTuple(c1)]),
-                    startPoint: CGPoint(x: hew * 0.7, y: -heh * 0.85),
-                    endPoint: CGPoint(x: -hew * 0.8, y: heh * 0.9)
-                ))
-            }
-
-            // Subtle separation border — rgba(0,0,0,0.08) 1pt
-            handCtx.stroke(handPath, with: .color(Color.black.opacity(0.08)), lineWidth: 1)
-        }
+        drawHands(context: context, size: size, layer: .behind)
     }
 
     func drawHandsAndExtras(context: GraphicsContext, size: CGSize) {
         let W = size.width
         let H = size.height
         let R = W * 0.3
-        let rx = R * 1.14
-        let ry = R * 0.88
+        let rx = R
+        let ry = R
         let cx = W / 2 + ox * R
         let cy = H / 2 + particleOverhang / 2 + oy * R + R * 0.06
+
+        // Draw foreground hands (waving hand or celebration cheer)
+        drawHands(context: context, size: size, layer: .inFront)
 
         // Badge — hidden while morphing to mailbox
         if let badge = badge, badgeS > 0.01, morph < 0.25 {
@@ -978,11 +977,150 @@ final class BotEngine: ObservableObject {
         drawParticles(context: context, size: size, R: R, cx: cx, cy: cy)
     }
 
+    private func drawHands(context: GraphicsContext, size: CGSize, layer: HandLayer) {
+        guard hands > 0.01, !isMini else { return }
+        let W = size.width, H = size.height
+        let R = W * 0.3
+        guard R > 14 else { return }
+        let rx = R
+        let ry = R
+        let cx = W / 2 + ox * R
+        let cy = H / 2 + particleOverhang / 2 + oy * R + R * 0.06
+
+        let now = CACurrentMediaTime()
+        let isWaving = now >= waveStart && waveStart > 0 && now < waveUntil
+
+        // Hand ellipse dimensions: smooth 3D floating ovals
+        let hew = 0.28 * R * hands
+        let heh = 0.26 * R * hands
+
+        let hwB = rx * sx
+        let hhB = ry * sy
+
+        for sd in [-1.0, 1.0] {
+            var localX: CGFloat
+            var localY: CGFloat
+            var handRot: CGFloat = 0
+            var inFrontOfBody = false
+
+            if sd > 0 && isWaving {
+                // Right hand: rise smoothly to wave position over first 180ms, then wave
+                inFrontOfBody = true
+                let wt = CGFloat(now - waveStart)
+                let rise = min(1.0, wt / 0.18)
+                let riseEased: CGFloat = 1 - pow(1 - rise, 3)
+
+                let restX: CGFloat = hwB * 1.15
+                let restY: CGFloat = hhB * 0.26
+                let oscX = cos(13 * wt) * 0.08 * R
+                let oscY = -sin(13 * wt) * 0.15 * R
+                let waveX: CGFloat = hwB * 1.10 + oscX
+                let waveY: CGFloat = -hhB * 0.18 + oscY
+                localX = restX + (waveX - restX) * riseEased
+                localY = restY + (waveY - restY) * riseEased
+                handRot = (-0.45 + sin(13 * wt) * 0.38) * riseEased
+
+            } else if sd < 0 && isWaving {
+                // Left hand: gentle resting sway during wave
+                inFrontOfBody = false
+                let wt = CGFloat(now - waveStart)
+                localX = -hwB * 1.15
+                localY = hhB * 0.26 + sin(5 * wt) * 0.04 * R
+                handRot = -0.20
+
+            } else if state == .finished {
+                // Finished celebration: both hands cheer high in triumph!
+                inFrontOfBody = true
+                let wt = CGFloat(now)
+                localX = CGFloat(sd) * hwB * 1.08
+                localY = -hhB * 0.22 + sin(wt * 6.0 + CGFloat(sd) * 0.6) * 3.5
+                handRot = CGFloat(sd) * 0.42
+
+            } else if state == .error || state == .ratelimit {
+                // Error / Rate limit: hands droop low, shrug outward
+                inFrontOfBody = false
+                localX = CGFloat(sd) * hwB * 1.25
+                localY = hhB * 0.46
+                handRot = CGFloat(sd) * -0.32
+
+            } else if eyeOverride == .annoyed {
+                // Annoyed: hands tuck tight against body
+                inFrontOfBody = false
+                localX = CGFloat(sd) * hwB * 0.98
+                localY = hhB * 0.28
+                handRot = CGFloat(sd) * 0.22
+
+            } else if state == .dizzy {
+                // Dizzy: hands wobble and orbit wildly around the sphere
+                inFrontOfBody = sin(CGFloat(now) * 8 + CGFloat(sd)) > 0
+                let wt = CGFloat(now)
+                localX = CGFloat(sd) * (hwB * (1.1 + sin(wt * 8 + CGFloat(sd)) * 0.18))
+                localY = hhB * 0.25 + cos(wt * 8 + CGFloat(sd)) * 0.22 * R
+                handRot = wt * 5.0 * CGFloat(sd)
+
+            } else {
+                // Idle / Working / Follow: floating beside body with lifelike breathing
+                let wt = CGFloat(now)
+                // Head yaw parallax: when looking right (yaw > 0), left hand shifts forward, right hand back
+                let parallaxX = -yaw * 4.0
+                let hoverLift: CGFloat = isHovered ? -4.0 : 0.0
+
+                localX = CGFloat(sd) * (hwB * 1.14 + 3) + parallaxX
+                localY = hhB * 0.26 + sin(wt * 2.0 + CGFloat(sd) * 0.6) * 3.0 + hoverLift
+                handRot = CGFloat(sd) * (0.18 + (isHovered ? 0.08 : 0.0))
+                inFrontOfBody = false
+            }
+
+            // Layer check: only draw in matching pass
+            if layer == .behind && inFrontOfBody { continue }
+            if layer == .inFront && !inFrontOfBody { continue }
+
+            // Apply body tilt to get world position
+            let cosT = cos(tilt), sinT = sin(tilt)
+            let worldX = cx + cosT * localX - sinT * localY
+            let worldY = cy + sinT * localX + cosT * localY
+
+            // Draw hand
+            var handCtx = context
+            handCtx.translateBy(x: worldX, y: worldY)
+            if handRot != 0 { handCtx.rotate(by: .radians(handRot)) }
+
+            let handRect = CGRect(x: -hew, y: -heh, width: hew * 2, height: heh * 2)
+            var handPath = Path()
+            handPath.addEllipse(in: handRect)
+
+            // Metallic light silver gradient matching Grokbot body
+            let c0 = cgColorToTuple(MochiConst.baseTop)
+            let c1 = cgColorToTuple(MochiConst.baseBottom)
+            handCtx.fill(handPath, with: .linearGradient(
+                Gradient(colors: [colorFromTuple(c0), colorFromTuple(c1)]),
+                startPoint: CGPoint(x: -hew * 0.35, y: -heh * 0.85),
+                endPoint: CGPoint(x: hew * 0.35, y: heh * 0.85)
+            ))
+
+            // State subtle underglow on hands
+            let effectiveTint = tint * (1 - morph)
+            if effectiveTint > 0.01 {
+                let tc = colorFromTuple(col)
+                handCtx.fill(handPath, with: .linearGradient(
+                    Gradient(stops: [
+                        .init(color: tc.opacity(Double(0.45 * effectiveTint)), location: 0),
+                        .init(color: tc.opacity(0), location: 0.8)
+                    ]),
+                    startPoint: CGPoint(x: 0, y: heh),
+                    endPoint: CGPoint(x: 0, y: -heh)
+                ))
+            }
+
+            // Delicate crisp rim
+            handCtx.stroke(handPath, with: .color(Color.black.opacity(0.10)), lineWidth: 1)
+        }
+    }
+
     // MARK: - Private draw helpers
 
     private func mochiPath(rx: CGFloat, ry: CGFloat, morph: CGFloat, R: CGFloat) -> Path {
         let n = 72
-        let expN: CGFloat = 2.0 / 2.7
         // Target mailbox dims (spec: 1.0R wide, 0.94R tall, 0.42R corner radius)
         let tw = R * 1.0
         let th = R * 0.94
@@ -991,8 +1129,8 @@ final class BotEngine: ObservableObject {
         for i in 0...n {
             let a = CGFloat(i) / CGFloat(n) * .pi * 2
             let ca = cos(a), sa = sin(a)
-            let px0 = rx * (ca >= 0 ? pow(ca, expN) : -pow(-ca, expN))
-            let py0 = ry * (sa >= 0 ? pow(sa, expN) : -pow(-sa, expN))
+            let px0 = rx * ca
+            let py0 = ry * sa
             let px: CGFloat
             let py: CGFloat
             if morph < 0.005 {
@@ -1055,46 +1193,62 @@ final class BotEngine: ObservableObject {
             // Mini bots: flat solid fill — no gradient, no reflection, no highlight
             ctx.fill(path, with: .color(Color(cgColor: bc)))
         } else {
-            // Main bot: linear gradient body
-            let c0 = cgColorToTuple(MochiConst.baseTop)
-            let c1 = cgColorToTuple(MochiConst.baseBottom)
-            ctx.fill(path, with: .linearGradient(
-                Gradient(colors: [colorFromTuple(c0), colorFromTuple(c1)]),
-                startPoint: CGPoint(x: rx*0.7, y: -ry*0.85),
-                endPoint: CGPoint(x: -rx*0.8, y: ry*0.9)
-            ))
-            // State tint — fades out as morph increases (mailbox has no tint)
-            let effectiveTint = tint * (1 - morph)
-            if effectiveTint > 0.01 {
-                let tc = colorFromTuple(col)
-                ctx.fill(path, with: .linearGradient(
-                    Gradient(stops: [
-                        .init(color: tc.opacity(Double(0.72 * effectiveTint)), location: 0),
-                        .init(color: tc.opacity(0), location: 1)
-                    ]),
-                    startPoint: CGPoint(x: 0, y: ry),
-                    endPoint: CGPoint(x: 0, y: -ry)
-                ))
+            // Main Grokbot: smooth metallic silver sphere with state underglow
+            // In error state (Frame 4), tints to soft peach-rose; in idle (Frame 1), soft ice-cyan
+            let topColor: Color
+            let botColor: Color
+            if state == .error {
+                topColor = Color(red: 0.98, green: 0.92, blue: 0.93)
+                botColor = Color(red: 0.96, green: 0.70, blue: 0.74)
+            } else {
+                topColor = Color(cgColor: MochiConst.baseTop)
+                botColor = Color(red: 0.70, green: 0.78, blue: 0.86)
             }
-            // Shadow rim
+            ctx.fill(path, with: .linearGradient(
+                Gradient(colors: [topColor, botColor]),
+                startPoint: CGPoint(x: -rx * 0.35, y: -ry * 0.85),
+                endPoint: CGPoint(x: rx * 0.35, y: ry * 0.95)
+            ))
+
+            // Bottom state underglow (rising from bottom of sphere, signature Grokbot look)
+            let effectiveTint = tint * (1 - morph)
+            let tc = colorFromTuple(col)
+            // Subtle cool cyan underglow floor even at tint=0 (idle), matching case study
+            let glowAlpha = max(Double(effectiveTint * 0.78), 0.28)
+            ctx.fill(path, with: .linearGradient(
+                Gradient(stops: [
+                    .init(color: tc.opacity(glowAlpha), location: 0.0),
+                    .init(color: tc.opacity(glowAlpha * 0.52), location: 0.42),
+                    .init(color: tc.opacity(0.0), location: 0.88)
+                ]),
+                startPoint: CGPoint(x: 0, y: ry),
+                endPoint: CGPoint(x: 0, y: -ry * 0.3)
+            ))
+
+            // Soft spherical 3D falloff
             ctx.fill(path, with: .radialGradient(
                 Gradient(stops: [
                     .init(color: .clear, location: 0),
-                    .init(color: .clear, location: 0.6),
-                    .init(color: Color.black.opacity(0.2), location: 1)
+                    .init(color: .clear, location: 0.68),
+                    .init(color: Color.black.opacity(0.20), location: 1.0)
                 ]),
-                center: .zero, startRadius: R*0.15, endRadius: R*1.25
+                center: .zero, startRadius: R * 0.3, endRadius: R * 1.05
             ))
-            // Highlight
+
+            // Specular sphere highlight (soft top-left highlight)
             ctx.fill(path, with: .radialGradient(
                 Gradient(stops: [
                     .init(color: Color.white.opacity(0.55), location: 0),
+                    .init(color: Color.white.opacity(0.18), location: 0.42),
                     .init(color: .clear, location: 1)
                 ]),
-                center: CGPoint(x: rx*0.34, y: -ry*0.46),
+                center: CGPoint(x: -rx * 0.22, y: -ry * 0.38),
                 startRadius: 0,
-                endRadius: R*0.42
+                endRadius: R * 0.55
             ))
+
+            // Subtle crisp perimeter edge
+            ctx.stroke(path, with: .color(Color.black.opacity(0.08)), lineWidth: 0.8)
         }
     }
 
@@ -1111,7 +1265,7 @@ final class BotEngine: ObservableObject {
     }
 
     private func drawEyes(ctx: inout GraphicsContext, path: Path, R: CGFloat, rx: CGFloat, ry: CGFloat) {
-        var shape = eyeOverride ?? cfg.eye
+        var shape = ((state == .thinking || state == .working) && eyeOverride == .wink) ? cfg.eye : (eyeOverride ?? cfg.eye)
         // In box mode: cup eyes when file over box (slotHTarget set), happy arcs while chewing
         if morph > 0.5 {
             if isChewing { shape = .happy }
@@ -1134,7 +1288,7 @@ final class BotEngine: ObservableObject {
             let fx = lerp(max(0.18, cos(eyeYaw)), 1, morph * 0.7)
             let fy = lerp(max(0.18, cp),          1, morph * 0.7)
 
-            let eyeMult: CGFloat = isMini ? 1.9 : 1.0
+            let eyeMult: CGFloat = isMini ? 1.4 : 1.0
             let ew = R * MochiConst.eyeW * es * eyeMult
             let eh = R * MochiConst.eyeH * es * eyeMult
 
@@ -1151,18 +1305,22 @@ final class BotEngine: ObservableObject {
 
         switch shape {
         case .wide:
-            drawEyeShape(ctx: &ctx, shape: .pill, w: w*1.16, h: h*1.12, open: open, sd: sd, R: R)
+            drawEyeShape(ctx: &ctx, shape: .pill, w: w*1.22, h: h*1.15, open: open, sd: sd, R: R)
 
         case .pill:
-            let hh = max(h * open, w * 0.3)
+            // When blinking (open < 0.35), squash into sleek horizontal rectangle slit (_ _) matching Grokbot Frame 10
+            let blinkSquash = max(0, 0.35 - open) / 0.35
+            let currentW = w * (1.0 + blinkSquash * 0.36)
+            let hh = max(h * open, w * 0.22)
+            let corner = open < 0.35 ? 2.5 : min(currentW, hh) / 2
             var p = Path()
-            p.addRoundedRect(in: CGRect(x: -w/2, y: -hh/2, width: w, height: hh),
-                             cornerSize: CGSize(width: min(w/2, hh/2), height: min(w/2, hh/2)))
+            p.addRoundedRect(in: CGRect(x: -currentW/2, y: -hh/2, width: currentW, height: hh),
+                             cornerSize: CGSize(width: corner, height: corner))
             ctx.fill(p, with: .color(ink))
 
         case .dot:
             var p = Path()
-            p.addEllipse(in: CGRect(x: -w*0.45, y: -w*0.45, width: w*0.9, height: w*0.9))
+            p.addEllipse(in: CGRect(x: -w*0.5, y: -w*0.5, width: w, height: w))
             ctx.fill(p, with: .color(ink))
 
         case .line:
@@ -1173,36 +1331,37 @@ final class BotEngine: ObservableObject {
             ctx.fill(p, with: .color(ink))
 
         case .flat:
+            // Error state: horizontal rectangles (- -) matching Grokbot Frame 4
+            let ew = w * 1.40
+            let eh = max(w * 0.42, w * 0.42 * open)
             var p = Path()
-            p.addRoundedRect(in: CGRect(x: -w*0.72, y: -w*0.2, width: w*1.44, height: w*0.4),
-                             cornerSize: CGSize(width: w*0.2, height: w*0.2))
+            p.addRoundedRect(in: CGRect(x: -ew/2, y: -eh/2, width: ew, height: eh),
+                             cornerSize: CGSize(width: 2.5, height: 2.5))
             ctx.fill(p, with: .color(ink))
 
-        case .happy:
+        case .happy, .closed:
+            // Grokbot design: 2 sleek horizontal rectangles instead of curved arcs (- -)
+            let rw = w * 1.35
+            let rh = max(w * 0.48, w * 0.48 * open)
+            let cr: CGFloat = 2.5
             var p = Path()
-            p.addArc(center: CGPoint(x: 0, y: h*0.18), radius: w*0.82,
-                     startAngle: .degrees(180 + 12), endAngle: .degrees(180 - 12), clockwise: true)
-            ctx.stroke(p, with: .color(ink), style: StrokeStyle(lineWidth: w*0.5, lineCap: .round))
-
-        case .closed:
-            var p = Path()
-            p.addArc(center: CGPoint(x: 0, y: -h*0.08), radius: w*0.78,
-                     startAngle: .degrees(15), endAngle: .degrees(165), clockwise: false)
-            ctx.stroke(p, with: .color(ink), style: StrokeStyle(lineWidth: w*0.36, lineCap: .round))
+            p.addRoundedRect(in: CGRect(x: -rw/2, y: -rh/2, width: rw, height: rh),
+                             cornerSize: CGSize(width: cr, height: cr))
+            ctx.fill(p, with: .color(ink))
 
         case .spiral:
             var p = Path()
             var a: CGFloat = 0
             while a < 4.4 * .pi {
                 let r  = w * 0.06 + a * w * 0.058
-                let aa = a + now * 9 * sd
+                let aa = a + now * 10 * sd
                 let px = cos(aa) * r
                 let py = sin(aa) * r
                 if a == 0 { p.move(to: CGPoint(x: px, y: py)) }
                 else { p.addLine(to: CGPoint(x: px, y: py)) }
                 a += 0.2
             }
-            ctx.stroke(p, with: .color(ink), style: StrokeStyle(lineWidth: w*0.22, lineCap: .round))
+            ctx.stroke(p, with: .color(ink), style: StrokeStyle(lineWidth: w*0.24, lineCap: .round))
 
         case .heart:
             let heartPath = heartShape(size: w * 1.2)
@@ -1214,33 +1373,34 @@ final class BotEngine: ObservableObject {
             ctx.fill(starPath, with: .color(Color(hex: "#F7B32B")))
 
         case .tired:
-            var p1 = Path()
-            p1.addRoundedRect(in: CGRect(x: -w/2, y: -h*0.02, width: w, height: h*0.38),
-                              cornerSize: CGSize(width: w/2, height: w/2))
-            ctx.fill(p1, with: .color(ink))
-            var p2 = Path()
-            p2.addRoundedRect(in: CGRect(x: -w*0.62, y: -h*0.1, width: w*1.24, height: w*0.22),
-                              cornerSize: CGSize(width: w*0.11, height: w*0.11))
-            ctx.fill(p2, with: .color(ink))
+            let ew = w * 1.25
+            let eh = max(h * 0.36 * open, w * 0.28)
+            var p = Path()
+            p.addRoundedRect(in: CGRect(x: -ew/2, y: -eh/2, width: ew, height: eh),
+                             cornerSize: CGSize(width: eh/2, height: eh/2))
+            ctx.fill(p, with: .color(ink))
 
         case .wink:
             if sd < 0 {
-                let hh = max(h * open, w * 0.3)
+                let hh = max(h * open, w * 0.32)
                 var p = Path()
                 p.addRoundedRect(in: CGRect(x: -w/2, y: -hh/2, width: w, height: hh),
-                                 cornerSize: CGSize(width: min(w/2,hh/2), height: min(w/2,hh/2)))
+                                 cornerSize: CGSize(width: w/2, height: w/2))
                 ctx.fill(p, with: .color(ink))
             } else {
+                let rw = w * 1.35
+                let rh = max(w * 0.38, w * 0.48 * open)
+                let cr: CGFloat = 2.5
                 var p = Path()
-                p.addArc(center: CGPoint(x: 0, y: h*0.18), radius: w*0.82,
-                         startAngle: .degrees(180+12), endAngle: .degrees(180-12), clockwise: true)
-                ctx.stroke(p, with: .color(ink), style: StrokeStyle(lineWidth: w*0.5, lineCap: .round))
+                p.addRoundedRect(in: CGRect(x: -rw/2, y: -rh/2, width: rw, height: rh),
+                                 cornerSize: CGSize(width: cr, height: cr))
+                ctx.fill(p, with: .color(ink))
             }
 
         case .cup:
             // Flat top, rounded bottom corners (like a cup / U-shape)
             let hh = max(h * open, w * 0.3)
-            let cr = min(w / 2, hh / 2)  // bottom corner radius
+            let cr = min(w / 2, hh / 2)
             var p = Path()
             p.move(to: CGPoint(x: -w/2, y: -hh/2))
             p.addLine(to: CGPoint(x: w/2, y: -hh/2))
@@ -1252,13 +1412,48 @@ final class BotEngine: ObservableObject {
                            control: CGPoint(x: -w/2, y: hh/2))
             p.closeSubpath()
             ctx.fill(p, with: .color(ink))
+
+        case .annoyed:
+            // Slanted angry/skeptical brow towards center (exact Grokbot Annoyed.webm geometry)
+            let hh = max(h * 0.88 * open, w * 0.35)
+            let slant: CGFloat = hh * 0.28
+            var p = Path()
+            if sd < 0 {
+                // Left eye: top-left high, top-right slants down toward center
+                p.move(to: CGPoint(x: -w/2, y: -hh/2 + w*0.25))
+                p.addQuadCurve(to: CGPoint(x: -w/2 + w*0.25, y: -hh/2), control: CGPoint(x: -w/2, y: -hh/2))
+                p.addLine(to: CGPoint(x: w/2 - w*0.2, y: -hh/2 + slant))
+                p.addQuadCurve(to: CGPoint(x: w/2, y: -hh/2 + slant + w*0.25), control: CGPoint(x: w/2, y: -hh/2 + slant))
+                p.addLine(to: CGPoint(x: w/2, y: hh/2 - w/2))
+                p.addArc(center: CGPoint(x: 0, y: hh/2 - w/2), radius: w/2, startAngle: .degrees(0), endAngle: .degrees(180), clockwise: false)
+                p.closeSubpath()
+            } else {
+                // Right eye: top-left slants down toward center, top-right high
+                p.move(to: CGPoint(x: -w/2, y: -hh/2 + slant + w*0.25))
+                p.addQuadCurve(to: CGPoint(x: -w/2 + w*0.2, y: -hh/2 + slant), control: CGPoint(x: -w/2, y: -hh/2 + slant))
+                p.addLine(to: CGPoint(x: w/2 - w*0.25, y: -hh/2))
+                p.addQuadCurve(to: CGPoint(x: w/2, y: -hh/2 + w*0.25), control: CGPoint(x: w/2, y: -hh/2))
+                p.addLine(to: CGPoint(x: w/2, y: hh/2 - w/2))
+                p.addArc(center: CGPoint(x: 0, y: hh/2 - w/2), radius: w/2, startAngle: .degrees(0), endAngle: .degrees(180), clockwise: false)
+                p.closeSubpath()
+            }
+            ctx.fill(p, with: .color(ink))
+
+        case .focused:
+            // Concentrated working pill eye
+            let hh = max(h * 0.88 * open, w * 0.3)
+            var p = Path()
+            p.addRoundedRect(in: CGRect(x: -w*0.5, y: -hh/2, width: w, height: hh),
+                             cornerSize: CGSize(width: w/2, height: w/2))
+            ctx.fill(p, with: .color(ink))
         }
     }
 
     private func drawBadge(context: GraphicsContext, size: CGSize, badge: BadgeType, R: CGFloat, rx: CGFloat, ry: CGFloat, cx: CGFloat, cy: CGFloat) {
         let bs = badgeS * (isMini ? 1.25 : 1)
-        let bx = cx - R * 0.72 * sx
-        let by = cy - R * 0.72 * sy
+        // Position at 10 o'clock on sphere perimeter
+        let bx = cx - R * 0.707 * sx
+        let by = cy - R * 0.707 * sy
         var ctx = context
         ctx.translateBy(x: bx, y: by)
         ctx.scaleBy(x: bs, y: bs)
@@ -1269,50 +1464,103 @@ final class BotEngine: ObservableObject {
             if isMini {
                 // Mini: animated pulsing dot
                 let phase = (now * 2.4).truncatingRemainder(dividingBy: 1)
-                let dotR = R * 0.22 * (1 + 0.25 * sin(phase * .pi * 2))
+                let dotR = R * 0.20 * (1 + 0.25 * sin(phase * .pi * 2))
                 var outer = Path()
-                outer.addEllipse(in: CGRect(x: -R*0.2, y: -R*0.2, width: R*0.4, height: R*0.4))
+                outer.addEllipse(in: CGRect(x: -R*0.22, y: -R*0.22, width: R*0.44, height: R*0.44))
                 ctx.fill(outer, with: .color(.black))
                 var dot = Path()
                 dot.addEllipse(in: CGRect(x: -dotR, y: -dotR, width: dotR*2, height: dotR*2))
                 ctx.fill(dot, with: .color(Color(cgColor: col)))
             } else {
-                // Pill badge with animated dots (prototype style)
-                let pw: CGFloat = R * 0.72
-                let ph: CGFloat = R * 0.36
-                var pill = Path()
-                pill.addRoundedRect(in: CGRect(x: -pw/2, y: -ph/2, width: pw, height: ph),
-                                    cornerSize: CGSize(width: ph/2, height: ph/2))
-                ctx.fill(pill, with: .color(Color(cgColor: col)))
-                for i in 0..<3 {
-                    let phase = ((now * 2.4 - CGFloat(i) * 0.22).truncatingRemainder(dividingBy: 1) + 1).truncatingRemainder(dividingBy: 1)
-                    let dotR = R * 0.055 * (1 + 0.4 * max(0, sin(phase * .pi * 2)))
-                    var dot = Path()
-                    dot.addEllipse(in: CGRect(x: (CGFloat(i)-1)*R*0.18 - dotR, y: -dotR, width: dotR*2, height: dotR*2))
-                    ctx.fill(dot, with: .color(.white))
+                // Novra Grokbot badge: sleek horizontal capsule pill with 3 animated white dots
+                let baseH: CGFloat = R * 0.28
+                let baseW: CGFloat = baseH * 1.82
+                let p = hoverPillProgress
+                let pillW = lerp(baseW, R * 1.30, p)
+                let pillH = baseH
+                let pillRect = CGRect(x: -baseW * 0.5, y: -baseH * 0.5, width: pillW, height: pillH)
+
+                // Outer crisp dark border
+                var borderPath = Path()
+                borderPath.addRoundedRect(in: pillRect.insetBy(dx: -1.5, dy: -1.5),
+                                          cornerSize: CGSize(width: (pillH + 3)/2, height: (pillH + 3)/2))
+                ctx.fill(borderPath, with: .color(.black))
+
+                // Vibrant pill body (purple for thinking, cyan/blue for working)
+                var fillPath = Path()
+                fillPath.addRoundedRect(in: pillRect,
+                                        cornerSize: CGSize(width: pillH/2, height: pillH/2))
+                ctx.fill(fillPath, with: .color(Color(cgColor: col)))
+
+                let dotAlpha = Double(max(0, 1.0 - p * 2.8))
+                if dotAlpha > 0.02 {
+                    // 3 animated circular white dots with smooth wave pulse (char_state_thinking.png)
+                    let dotR: CGFloat = baseH * 0.17
+                    let spacing: CGFloat = baseH * 0.44
+                    for i in 0..<3 {
+                        let dx = (CGFloat(i) - 1.0) * spacing + (pillW - baseW) * 0.5
+                        let wave = sin(Double(now) * 5.2 - Double(i) * 0.65)
+                        let dScale = 0.85 + 0.32 * max(0, wave)
+                        let dAlpha = 0.55 + 0.45 * max(0, wave)
+                        var dotP = Path()
+                        dotP.addEllipse(in: CGRect(x: dx - dotR * dScale, y: -dotR * dScale, width: dotR * 2 * dScale, height: dotR * 2 * dScale))
+                        ctx.fill(dotP, with: .color(Color.white.opacity(dotAlpha * dAlpha)))
+                    }
+                }
+
+                let textAlpha = Double(max(0, (p - 0.25) / 0.75))
+                if textAlpha > 0.02 {
+                    let labelText: String
+                    switch state {
+                    case .thinking: labelText = "Thinking"
+                    case .working:  labelText = "Working"
+                    case .idle:     labelText = "Ready"
+                    default:        labelText = "Coucou"
+                    }
+                    let label = Text(labelText)
+                        .font(.system(size: baseH * 0.55, weight: .bold))
+                        .foregroundColor(Color.white.opacity(textAlpha))
+                    ctx.draw(label, at: CGPoint(x: (pillW - baseW) / 2, y: 0))
                 }
             }
 
+        case .dot(let col):
+            // Finished (neon green) or Error (neon red) glowing dot badge
+            let dotR: CGFloat = R * 0.14
+            // Outer glow halo
+            var glowPath = Path()
+            glowPath.addEllipse(in: CGRect(x: -dotR * 2.2, y: -dotR * 2.2, width: dotR * 4.4, height: dotR * 4.4))
+            ctx.fill(glowPath, with: .radialGradient(
+                Gradient(stops: [
+                    .init(color: Color(cgColor: col).opacity(0.65), location: 0),
+                    .init(color: .clear, location: 1)
+                ]),
+                center: .zero, startRadius: dotR * 0.5, endRadius: dotR * 2.2
+            ))
+
+            // Black ring
+            var outer = Path()
+            outer.addEllipse(in: CGRect(x: -dotR * 1.35, y: -dotR * 1.35, width: dotR * 2.7, height: dotR * 2.7))
+            ctx.fill(outer, with: .color(.black))
+
+            // Neon core dot
+            var inner = Path()
+            inner.addEllipse(in: CGRect(x: -dotR, y: -dotR, width: dotR * 2, height: dotR * 2))
+            ctx.fill(inner, with: .color(Color(cgColor: col)))
+
         case .bang(let col), .question(let col):
+            let dotR: CGFloat = R * 0.22
             var ring = Path()
-            ring.addEllipse(in: CGRect(x: -R*0.3, y: -R*0.3, width: R*0.6, height: R*0.6))
+            ring.addEllipse(in: CGRect(x: -dotR*1.2, y: -dotR*1.2, width: dotR*2.4, height: dotR*2.4))
             ctx.fill(ring, with: .color(.black))
             var inner = Path()
-            inner.addEllipse(in: CGRect(x: -R*0.23, y: -R*0.23, width: R*0.46, height: R*0.46))
+            inner.addEllipse(in: CGRect(x: -dotR, y: -dotR, width: dotR*2, height: dotR*2))
             ctx.fill(inner, with: .color(Color(cgColor: col)))
             if !isMini {
                 let text = badge == .bang(col) ? "!" : "?"
-                ctx.draw(Text(text).font(.system(size: R*0.32, weight: .black)).foregroundColor(.white),
-                         at: CGPoint(x: 0, y: R*0.02))
+                ctx.draw(Text(text).font(.system(size: dotR * 1.4, weight: .black)).foregroundColor(.white),
+                         at: CGPoint(x: 0, y: dotR * 0.08))
             }
-
-        case .dot(let col):
-            var outer = Path()
-            outer.addEllipse(in: CGRect(x: -R*0.2, y: -R*0.2, width: R*0.4, height: R*0.4))
-            ctx.fill(outer, with: .color(.black))
-            var inner = Path()
-            inner.addEllipse(in: CGRect(x: -R*0.135, y: -R*0.135, width: R*0.27, height: R*0.27))
-            ctx.fill(inner, with: .color(Color(cgColor: col)))
         }
     }
 
@@ -1458,7 +1706,7 @@ private func emoteEyeShape(_ e: BotEmote) -> EyeShape {
     case .wink:      return .wink
     case .yawn:      return .tired
     case .happy:     return .happy
-    case .annoyed:   return .line
+    case .annoyed:   return .annoyed
     }
 }
 

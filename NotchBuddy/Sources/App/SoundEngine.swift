@@ -8,7 +8,7 @@ final class SoundEngine {
     static let shared = SoundEngine()
 
     var enabled: Bool = true
-    var volume: Float = 0.12 {
+    var volume: Float = 0.75 {
         didSet { players.values.forEach { $0.forEach { $0.volume = volume } } }
     }
 
@@ -25,7 +25,10 @@ final class SoundEngine {
                      "send","love","pop","proud","wink","yawn","attach","think","search",
                      "rate","sleep"]
         for name in names {
-            guard let url = Bundle.main.url(forResource: name, withExtension: "wav", subdirectory: "sounds") else { continue }
+            guard let url = Bundle.main.url(forResource: name, withExtension: "wav", subdirectory: "sounds")
+                ?? Bundle.main.url(forResource: name, withExtension: "wav")
+                ?? Bundle(for: SoundEngine.self).url(forResource: name, withExtension: "wav", subdirectory: "sounds")
+                ?? Bundle(for: SoundEngine.self).url(forResource: name, withExtension: "wav") else { continue }
             var pool: [AVAudioPlayer] = []
             for _ in 0..<3 {
                 if let p = try? AVAudioPlayer(contentsOf: url) {
@@ -40,11 +43,21 @@ final class SoundEngine {
 
     func play(_ name: String) {
         guard enabled && AppState.shared.soundEnabled else { return }
-        guard let pool = players[name] else { return }
-        // Find a player that is not currently playing
-        let player = pool.first { !$0.isPlaying } ?? pool[0]
-        player.currentTime = 0
-        player.volume = volume
-        player.play()
+        if let pool = players[name] {
+            let player = pool.first { !$0.isPlaying } ?? pool[0]
+            player.currentTime = 0
+            player.volume = volume
+            player.play()
+        } else {
+            if let url = Bundle.main.url(forResource: name, withExtension: "wav", subdirectory: "sounds")
+                ?? Bundle.main.url(forResource: name, withExtension: "wav")
+                ?? Bundle(for: SoundEngine.self).url(forResource: name, withExtension: "wav", subdirectory: "sounds")
+                ?? Bundle(for: SoundEngine.self).url(forResource: name, withExtension: "wav"),
+               let p = try? AVAudioPlayer(contentsOf: url) {
+                p.volume = volume
+                p.play()
+                players[name] = [p]
+            }
+        }
     }
 }

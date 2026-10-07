@@ -401,12 +401,14 @@ struct UploadCanvasView: View {
             ctx.fill(p, with: .color(ink))
 
         case .content:
-            // Upward arc (content / happy)
+            // Grokbot design: sleek horizontal rectangle
+            let rw = w * 1.35
+            let rh = w * 0.48
+            let cr: CGFloat = 2.5
             var p = Path()
-            p.addArc(center: CGPoint(x:0, y:-h*0.12), radius:w*0.85,
-                     startAngle:.degrees(180*0.15), endAngle:.degrees(180*0.85), clockwise:false)
-            ctx.stroke(p, with: .color(ink),
-                       style: StrokeStyle(lineWidth:w*0.5, lineCap:.round))
+            p.addRoundedRect(in: CGRect(x: -rw/2, y: -rh/2, width: rw, height: rh),
+                             cornerSize: CGSize(width: cr, height: cr))
+            ctx.fill(p, with: .color(ink))
         }
     }
 
