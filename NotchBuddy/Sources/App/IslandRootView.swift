@@ -1010,36 +1010,67 @@ struct IslandContentView: View {
 
 // MARK: - Island header (tabs + icons)
 
+struct HeaderIconButton: View {
+    let icon: String
+    var isActive: Bool = false
+    var activeColor: Color = Color(hex: "#F5F6F8")
+    var normalColor: Color = Color(hex: "#8E939C")
+    var helpText: String? = nil
+    var action: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.system(size: 13))
+                .foregroundColor(isActive ? activeColor : (isHovered ? Color(hex: "#B0B5BE") : normalColor))
+                .frame(width: 30, height: 22)
+                .background(
+                    isActive ? Color(hex: "#1D1F23") :
+                    isHovered ? Color.white.opacity(0.07) : Color.clear
+                )
+                .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        .help(helpText ?? "")
+    }
+}
+
 struct IslandHeader: View {
     @ObservedObject var state: AppState
     @State private var copiedChat: Bool = false
 
     var body: some View {
         HStack(spacing: 0) {
-            // Left: Chat title & copy button (safely left of physical notch)
-            HStack(spacing: 8) {
-                Button(action: {
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                        state.view = .prompt
-                    }
-                }) {
-                    HStack(spacing: 5) {
-                        Image(systemName: "bubble.left.fill")
-                            .font(.system(size: 11))
-                        Text("Chat")
-                            .font(.system(size: 12, weight: .semibold))
-                    }
-                    .foregroundColor(state.view == .prompt ? Color(hex: "#F5F6F8") : Color(hex: "#8E939C"))
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 4)
-                    .background(state.view == .prompt ? Color(hex: "#1D1F23") : Color.clear)
-                    .clipShape(Capsule())
-                }
-                .buttonStyle(.plain)
+            // Left: tab capsules (icon-only: Home, Chat, History, New, Copy)
+            HStack(spacing: 5) {
+                TabButton(icon: "house.fill", view: .overview, state: state)
+                    .help("Trang chủ")
 
-                if !state.chatHistory.isEmpty {
-                    // New session button (safely left of physical notch)
-                    Button(action: {
+                TabButton(icon: "bubble.left.fill", view: .prompt, state: state, preAction: {
+                    #if !APPSTORE
+                    if state.promptContext == nil {
+                        state.promptContext = WindowContextCapture.captureActive(from: state.lastExternalApp)
+                    }
+                    #endif
+                })
+                .help("Trò chuyện")
+
+                TabButton(
+                    icon: state.view == .history ? "clock.arrow.circlepath" : "clock",
+                    view: .history,
+                    state: state,
+                    hasBadge: !state.sessions.isEmpty
+                )
+                .help("Lịch sử phiên chat")
+
+                // New session button (+)
+                HeaderIconButton(
+                    icon: "plus",
+                    helpText: "Bắt đầu phiên chat mới",
+                    action: {
                         withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
                             state.archiveCurrentSession()
                             state.chatHistory.removeAll()
@@ -1049,90 +1080,35 @@ struct IslandHeader: View {
                             ClaudeService.shared.clearConversation()
                             UserDefaults.standard.set(true, forKey: "explicitNewSession")
                             UserDefaults.standard.removeObject(forKey: "savedActiveSessionId")
+                            state.view = .prompt
                         }
-                    }) {
-                        HStack(spacing: 4) {
-                            Image(systemName: "square.and.pencil")
-                                .font(.system(size: 11))
-                            Text("New")
-                                .font(.system(size: 11))
-                        }
-                        .foregroundColor(Color(hex: "#8E939C"))
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 3)
-                        .background(Color.white.opacity(0.06))
-                        .clipShape(Capsule())
                     }
-                    .buttonStyle(.plain)
-                    .help("Bắt đầu phiên chat mới")
+                )
 
-                    // Copy full chat button
-                    Button(action: {
-                        state.copyFullConversationToClipboard()
-                        copiedChat = true
-                        Task {
-                            try? await Task.sleep(nanoseconds: 2_000_000_000)
-                            copiedChat = false
+                // Copy full chat button (appears when chat is present)
+                if !state.chatHistory.isEmpty {
+                    HeaderIconButton(
+                        icon: copiedChat ? "checkmark" : "doc.on.doc",
+                        isActive: copiedChat,
+                        activeColor: Color(hex: "#10B981"),
+                        helpText: copiedChat ? "Đã sao chép cuộc trò chuyện" : "Sao chép toàn bộ cuộc trò chuyện",
+                        action: {
+                            state.copyFullConversationToClipboard()
+                            copiedChat = true
+                            Task {
+                                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                                copiedChat = false
+                            }
                         }
-                    }) {
-                        HStack(spacing: 3.5) {
-                            Image(systemName: copiedChat ? "checkmark" : "doc.on.doc")
-                                .font(.system(size: 10))
-                            Text(copiedChat ? "Đã copy" : "Copy")
-                                .font(.system(size: 11))
-                        }
-                        .foregroundColor(copiedChat ? Color(hex: "#10B981") : Color(hex: "#8E939C"))
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 3)
-                        .background(Color.white.opacity(0.06))
-                        .clipShape(Capsule())
-                    }
-                    .buttonStyle(.plain)
-                    .help("Sao chép toàn bộ cuộc trò chuyện vào Clipboard")
+                    )
                 }
             }
             .padding(.leading, 14)
 
             Spacer()
 
-            // Right: Session History (safely right of physical notch) + Window controls
-            HStack(spacing: 9) {
-
-                // Session History Tab Button
-                Button(action: {
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                        state.view = (state.view == .history) ? .prompt : .history
-                    }
-                }) {
-                    HStack(spacing: 4) {
-                        Image(systemName: state.view == .history ? "clock.arrow.circlepath" : "clock")
-                            .font(.system(size: 11))
-                        Text("History")
-                            .font(.system(size: 11))
-                        if !state.sessions.isEmpty {
-                            Text("\(state.sessions.count)")
-                                .font(.system(size: 9, weight: .bold))
-                                .foregroundColor(state.view == .history ? Color(hex: "#F5F6F8") : Color(hex: "#A78BFA"))
-                                .padding(.horizontal, 4.5)
-                                .padding(.vertical, 1)
-                                .background(state.view == .history ? Color.white.opacity(0.2) : Color(hex: "#A78BFA").opacity(0.18))
-                                .clipShape(Capsule())
-                        }
-                    }
-                    .foregroundColor(state.view == .history ? Color(hex: "#F5F6F8") : Color(hex: "#8E939C"))
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 3)
-                    .background(state.view == .history ? Color(hex: "#1D1F23") : Color.white.opacity(0.06))
-                    .clipShape(Capsule())
-                }
-                .buttonStyle(.plain)
-                .help("Lịch sử phiên chat")
-
-                // Subtle divider
-                Rectangle()
-                    .fill(Color.white.opacity(0.12))
-                    .frame(width: 1, height: 13)
-                    .padding(.horizontal, 2)
+            // Right: Window controls
+            HStack(spacing: 12) {
 
                 // Expand / Restore button
                 Button(action: {
@@ -1152,6 +1128,7 @@ struct IslandHeader: View {
                 .buttonStyle(.plain)
                 .help(state.isLargeExpanded ? "Thu nhỏ lại kích thước chuẩn" : "Mở rộng khung Coucou")
 
+                // Settings button
                 Button(action: {
                     withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
                         state.view = (state.view == .settings) ? .prompt : .settings
@@ -1165,6 +1142,7 @@ struct IslandHeader: View {
                 .buttonStyle(.plain)
                 .help("Cài đặt")
 
+                // Sound toggle button
                 Button(action: { state.soundEnabled.toggle() }) {
                     Image(systemName: state.soundEnabled ? "speaker.wave.2" : "speaker.slash")
                         .font(.system(size: 14))
@@ -1184,6 +1162,7 @@ struct TabButton: View {
     let view: IslandView
     @ObservedObject var state: AppState
     var preAction: (() -> Void)? = nil
+    var hasBadge: Bool = false
     @State private var isHovered = false
 
     private var isOn: Bool {
@@ -1198,15 +1177,24 @@ struct TabButton: View {
                 state.view = view
             }
         }) {
-            Image(systemName: icon)
-                .font(.system(size: 13))
-                .foregroundColor(isOn ? Color(hex: "#F5F6F8") : (isHovered ? Color(hex: "#B0B5BE") : Color(hex: "#8E939C")))
-                .frame(width: 30, height: 22)
-                .background(
-                    isOn ? Color(hex: "#1D1F23") :
-                    isHovered ? Color.white.opacity(0.07) : Color.clear
-                )
-                .clipShape(Capsule())
+            ZStack(alignment: .topTrailing) {
+                Image(systemName: icon)
+                    .font(.system(size: 13))
+
+                if hasBadge {
+                    Circle()
+                        .fill(Color(hex: "#A78BFA"))
+                        .frame(width: 5, height: 5)
+                        .offset(x: 2.5, y: -2.5)
+                }
+            }
+            .foregroundColor(isOn ? Color(hex: "#F5F6F8") : (isHovered ? Color(hex: "#B0B5BE") : Color(hex: "#8E939C")))
+            .frame(width: 30, height: 22)
+            .background(
+                isOn ? Color(hex: "#1D1F23") :
+                isHovered ? Color.white.opacity(0.07) : Color.clear
+            )
+            .clipShape(Capsule())
         }
         .buttonStyle(.plain)
         .onHover { isHovered = $0 }
