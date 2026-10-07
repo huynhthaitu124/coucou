@@ -5,6 +5,7 @@ import SwiftUI
 struct BotCanvasView: View {
     @ObservedObject var state: AppState
     var particleOverhang: CGFloat = 0
+    var lookOriginOverride: CGPoint? = nil
 
     // One engine per view instance (main bot)
     @StateObject private var engine = BotEngine()
@@ -33,14 +34,22 @@ struct BotCanvasView: View {
                     ? cgColorFromHex(state.focusTask!.color)
                     : nil
 
-                let isMainPill = state.focusId == nil || state.focusId == "claude"
-                let isWardrobe = state.mode == .expanded && state.view == .wardrobe
-                let showOutfit = isMainPill && (state.mode != .expanded || isWardrobe)
-                engine.setOutfit(showOutfit ? state.resolvedOutfit : .none,
-                                 animated: state.view != .wardrobe)
-                #if !APPSTORE
-                engine.setDancing(state.musicPlaying)
-                #endif
+                // Compute shouldDance per-frame (no observer lag)
+                let dancing: Bool = {
+                    #if !APPSTORE
+                    guard AppState.shared.musicPlaying else { return false }
+                    guard AppState.shared.activeIntegrations.contains("integration_music") else { return false }
+                    let allowed: Set<BotState> = [.idle, .working, .thinking, .searching, .finished]
+                    guard allowed.contains(state.effectiveState) else { return false }
+                    if state.mode == .compact { return true }
+                    return state.mode == .expanded && state.view == .overview && state.focusId == "integration_music"
+                    #else
+                    return false
+                    #endif
+                }()
+                engine.setDancing(dancing)
+
+                updateOutfit(animated: state.view != .wardrobe)
                 engine.update(dt: dt)
                 var ctx = context
                 engine.applyDance(&ctx, size: size)
@@ -128,10 +137,21 @@ struct BotCanvasView: View {
         }
         .onAppear {
             engine.setState(state.effectiveState, force: true)
+            updateOutfit(animated: false)
         }
     }
 
+    private func updateOutfit(animated: Bool) {
+        let isFocusMain = state.focusId == state.mainPillId || state.focusId == nil
+        let isWardrobe = state.mode == .expanded && state.view == .wardrobe
+        let showOutfit = isFocusMain || state.mode != .expanded || isWardrobe
+        engine.setOutfit(showOutfit ? state.resolvedOutfit : .none, animated: animated)
+    }
+
     private func lookX(state: AppState, size: CGSize) -> CGFloat {
+        if let origin = lookOriginOverride {
+            return tanh((state.mousePosition.x - origin.x) / 260)
+        }
         let screen = NSScreen.main ?? NSScreen.screens[0]
         let (islandW, islandH) = islandSize(mode: state.mode, view: state.view,
                                              progress: state.uploadProgress,
@@ -163,6 +183,9 @@ struct BotCanvasView: View {
     }
 
     private func lookY(state: AppState, size: CGSize) -> CGFloat {
+        if let origin = lookOriginOverride {
+            return -tanh((state.mousePosition.y - origin.y) / 200)
+        }
         let screen = NSScreen.main ?? NSScreen.screens[0]
         let (islandW, islandH) = islandSize(mode: state.mode, view: state.view,
                                              progress: state.uploadProgress,
