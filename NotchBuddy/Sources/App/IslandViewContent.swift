@@ -4498,7 +4498,7 @@ private func drawOutfitIcon(context: GraphicsContext, size: CGSize, outfit: Outf
 
 // MARK: - Card background
 
-// MARK: - Multi-Layer Optical Card Background (Low Bottom Wave Surge to Edges)
+// MARK: - Multi-Layer Optical Card Background (Unified Bottom Ambient Bloom)
 
 struct CardBackgroundLayer: View {
     let cardRadius: CGFloat
@@ -4511,36 +4511,23 @@ struct CardBackgroundLayer: View {
         TimelineView(.animation(paused: state.mode != .expanded)) { tl in
             let time = tl.date.timeIntervalSinceReferenceDate
             let elapsed = time - lastTransitionTime
-            let surgeDuration: Double = 1.25
+            let surgeDuration: Double = 1.15
             let isSurging = elapsed < surgeDuration
 
             // Normalized transition progress p: 0.0 -> 1.0
             let p = isSurging ? min(1.0, max(0.0, elapsed / surgeDuration)) : 1.0
             let ease = isSurging ? (1.0 - pow(1.0 - p, 3.0)) : 1.0
-            let surgeAlpha = isSurging ? sin(p * .pi) : 0.0
-            let bottomFlash = isSurging ? max(0.0, 1.0 - p * 2.8) : 0.0
+            let surge = isSurging ? sin(p * .pi) : 0.0
 
-            // Sóng đánh từ đáy giữa dàn thấp ra 2 góc đáy trái & phải (dàn thấp, không dâng lên cao)
-            // Left wave: moves along bottom from center (0.50, 1.22) -> (0.02, 1.16)
-            let leftWaveX = 0.50 - ease * 0.48
-            let leftWaveY = 1.22 - ease * 0.06
-            let leftWaveRadius: CGFloat = 140 + CGFloat(ease) * 110
+            // Hơi thở nhẹ nhàng khi idle (tuyệt đối êm dịu, không có hình khối di chuyển)
+            let idleBreath = sin(time * 0.85) * 0.035
 
-            // Right wave: moves along bottom from center (0.50, 1.22) -> (0.98, 1.16)
-            let rightWaveX = 0.50 + ease * 0.48
-            let rightWaveY = 1.22 - ease * 0.06
-            let rightWaveRadius: CGFloat = 140 + CGFloat(ease) * 110
-
-            // Trạng thái bình thường (idle): thở êm đềm, nằm thấp ở đáy theo đúng ảnh mẫu
-            let idleBreath = sin(time * 0.85) * 0.03
-            let centerIdleAlpha = 0.38 + idleBreath
-            let cornerIdleAlpha = 0.24 + idleBreath * 0.5
-
-            let leftAlpha = cornerIdleAlpha + surgeAlpha * 0.48
-            let rightAlpha = cornerIdleAlpha + surgeAlpha * 0.44
+            // Khi chuyển state: dải sáng từ đáy nở rộng dàn đều êm ái sang 2 góc dưới
+            let bloomRadius: CGFloat = 260 + CGFloat(ease) * 40 + CGFloat(surge) * 25
+            let bloomAlpha = 0.44 + idleBreath + surge * 0.22
 
             ZStack {
-                // 1. Deep Obsidian Base Plate (Nền đen OLED sâu chuẩn gốc)
+                // 1. Deep Obsidian Base Plate (Nền đen OLED chuẩn ảnh gốc)
                 RoundedRectangle(cornerRadius: cardRadius, style: .continuous)
                     .fill(
                         LinearGradient(
@@ -4553,68 +4540,53 @@ struct CardBackgroundLayer: View {
                         )
                     )
 
-                // 2. Primary Bottom Ambient Bloom (Dải sáng chính ôm trọn mép đáy thấp)
+                // 2. Unified Bottom Ambient Bloom (Dải sáng đáy liền mạch, dàn êm ái ra 2 góc dưới)
                 RoundedRectangle(cornerRadius: cardRadius, style: .continuous)
                     .fill(
                         RadialGradient(
                             gradient: Gradient(stops: [
-                                .init(color: effectiveBloomColor.opacity(centerIdleAlpha + bottomFlash * 0.35), location: 0),
-                                .init(color: effectiveBloomColor.opacity((centerIdleAlpha + bottomFlash * 0.35) * 0.48), location: 0.38),
-                                .init(color: .clear, location: 0.78)
-                            ]),
-                            center: UnitPoint(x: 0.50, y: 1.22),
-                            startRadius: 0,
-                            endRadius: 260
-                        )
-                    )
-                    .blendMode(.plusLighter)
-
-                // 3. Sóng đáy tràn ra góc trái (Left Bottom Wave Spill - dàn thấp mép dưới)
-                RoundedRectangle(cornerRadius: cardRadius, style: .continuous)
-                    .fill(
-                        RadialGradient(
-                            gradient: Gradient(stops: [
-                                .init(color: effectiveBloomColor.opacity(leftAlpha), location: 0),
-                                .init(color: effectiveBloomColor.opacity(leftAlpha * 0.45), location: 0.38),
+                                .init(color: effectiveBloomColor.opacity(bloomAlpha), location: 0),
+                                .init(color: effectiveBloomColor.opacity(bloomAlpha * 0.50), location: 0.35),
+                                .init(color: effectiveBloomColor.opacity(bloomAlpha * 0.15), location: 0.65),
                                 .init(color: .clear, location: 0.82)
                             ]),
-                            center: UnitPoint(x: leftWaveX, y: leftWaveY),
+                            center: UnitPoint(x: 0.50, y: 1.20),
                             startRadius: 0,
-                            endRadius: leftWaveRadius
+                            endRadius: bloomRadius
                         )
                     )
                     .blendMode(.plusLighter)
 
-                // 4. Sóng đáy tràn ra góc phải (Right Bottom Wave Spill - dàn thấp mép dưới)
+                // 3. Secondary Warmth Counterbalance (Lớp màu phụ hòa quyện ở mép đáy tạo chiều sâu)
                 RoundedRectangle(cornerRadius: cardRadius, style: .continuous)
                     .fill(
                         RadialGradient(
                             gradient: Gradient(stops: [
-                                .init(color: secondaryGlowColor.opacity(rightAlpha), location: 0),
-                                .init(color: secondaryGlowColor.opacity(rightAlpha * 0.45), location: 0.38),
-                                .init(color: .clear, location: 0.82)
+                                .init(color: secondaryGlowColor.opacity(bloomAlpha * 0.30), location: 0),
+                                .init(color: secondaryGlowColor.opacity(bloomAlpha * 0.10), location: 0.40),
+                                .init(color: .clear, location: 0.75)
                             ]),
-                            center: UnitPoint(x: rightWaveX, y: rightWaveY),
+                            center: UnitPoint(x: 0.50, y: 1.24),
                             startRadius: 0,
-                            endRadius: rightWaveRadius
+                            endRadius: bloomRadius * 0.85
                         )
                     )
                     .blendMode(.plusLighter)
 
-                // 5. Character Backlight Halo (Vầng hào quang sau lưng Mochi như trong ảnh mẫu)
+                // 4. Character Backlight Halo (Vầng hào quang hình cầu mềm mại sau lưng Mochi)
                 GeometryReader { geo in
                     let haloX = geo.size.width > 220 ? 62.0 : geo.size.width * 0.22
                     let haloY = geo.size.height * 0.52
-                    let haloBreath = sin(time * 1.5) * 0.05
-                    let haloSize: CGFloat = 126.0 * (1.0 + CGFloat(haloBreath))
-                    let haloOpacity = 0.52 + haloBreath
+                    let haloBreath = sin(time * 1.4) * 0.04
+                    let haloSize: CGFloat = 124.0 * (1.0 + CGFloat(haloBreath))
+                    let haloOpacity = 0.52 + surge * 0.15 + haloBreath
 
                     Circle()
                         .fill(
                             RadialGradient(
                                 gradient: Gradient(stops: [
                                     .init(color: effectiveBloomColor.opacity(haloOpacity), location: 0),
-                                    .init(color: effectiveBloomColor.opacity(haloOpacity * 0.32), location: 0.42),
+                                    .init(color: effectiveBloomColor.opacity(haloOpacity * 0.35), location: 0.40),
                                     .init(color: .clear, location: 0.82)
                                 ]),
                                 center: .center,
@@ -4629,7 +4601,7 @@ struct CardBackgroundLayer: View {
                 }
                 .clipShape(RoundedRectangle(cornerRadius: cardRadius, style: .continuous))
 
-                // 6. Top Specular Glass Sheen (Lớp phản xạ mép kính trên tinh tế)
+                // 5. Top Specular Glass Sheen (Lớp phản xạ mép kính trên tinh tế)
                 RoundedRectangle(cornerRadius: cardRadius, style: .continuous)
                     .fill(
                         LinearGradient(
@@ -4643,14 +4615,14 @@ struct CardBackgroundLayer: View {
                         )
                     )
 
-                // 7. Specular Rim Stroke (Viền bo góc kính thanh thoát như gốc)
+                // 6. Specular Rim Stroke (Viền bo góc kính thanh thoát như gốc)
                 RoundedRectangle(cornerRadius: cardRadius, style: .continuous)
                     .stroke(
                         LinearGradient(
                             stops: [
                                 .init(color: Color.white.opacity(0.12), location: 0.0),
                                 .init(color: Color.white.opacity(0.04), location: 0.50),
-                                .init(color: effectiveBloomColor.opacity(0.20 + surgeAlpha * 0.35), location: 1.0)
+                                .init(color: effectiveBloomColor.opacity(0.18 + surge * 0.25), location: 1.0)
                             ],
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing
