@@ -3989,7 +3989,7 @@ struct NativeSystemWidgetView: View {
             HStack(spacing: 5) {
                 Image(systemName: "cpu")
                     .font(.system(size: 10, weight: .semibold))
-                    .foregroundColor(Color(hex: "#38BDF8"))
+                    .foregroundColor(Color.white.opacity(0.85))
                 Text("Mac System")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundColor(Color(hex: "#F5F6F8"))
@@ -4018,13 +4018,14 @@ struct NativeSystemWidgetView: View {
                     .frame(width: 26, alignment: .leading)
                 GeometryReader { g in
                     ZStack(alignment: .leading) {
-                        Capsule().fill(Color.white.opacity(0.10))
+                        Capsule().fill(Color.white.opacity(0.08))
                         Capsule()
-                            .fill(LinearGradient(colors: [Color(hex: "#38BDF8"), Color(hex: "#818CF8")], startPoint: .leading, endPoint: .trailing))
+                            .fill(Color.white.opacity(0.92))
                             .frame(width: max(4, g.size.width * CGFloat(metrics.cpuUsage)))
+                            .shadow(color: Color.white.opacity(0.45), radius: 3, x: 0, y: 0)
                     }
                 }
-                .frame(height: 5.5)
+                .frame(height: 4.5)
                 Text("\(Int(metrics.cpuUsage * 100))%")
                     .font(.system(size: 9.5, weight: .medium, design: .monospaced))
                     .foregroundColor(Color(hex: "#F3F4F6"))
@@ -4039,13 +4040,14 @@ struct NativeSystemWidgetView: View {
                     .frame(width: 26, alignment: .leading)
                 GeometryReader { g in
                     ZStack(alignment: .leading) {
-                        Capsule().fill(Color.white.opacity(0.10))
+                        Capsule().fill(Color.white.opacity(0.08))
                         Capsule()
-                            .fill(LinearGradient(colors: [Color(hex: "#A855F7"), Color(hex: "#EC4899")], startPoint: .leading, endPoint: .trailing))
+                            .fill(Color.white.opacity(0.92))
                             .frame(width: max(4, g.size.width * CGFloat(metrics.ramUsage)))
+                            .shadow(color: Color.white.opacity(0.45), radius: 3, x: 0, y: 0)
                     }
                 }
-                .frame(height: 5.5)
+                .frame(height: 4.5)
                 Text("\(String(format: "%.1f", metrics.ramUsedGB))G")
                     .font(.system(size: 9.5, weight: .medium, design: .monospaced))
                     .foregroundColor(Color(hex: "#F3F4F6"))
