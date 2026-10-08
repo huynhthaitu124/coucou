@@ -5,7 +5,13 @@ import Combine
 
 // MARK: - Music Controller
 
-/// Observes Apple Music state via distributed notifications and provides playback controls.
+enum MusicSource: String {
+    case appleMusic = "Apple Music"
+    case spotify = "Spotify"
+}
+
+/// Observes Apple Music and Spotify state via distributed notifications, provides periodic sync,
+/// and provides playback controls.
 /// Singleton, @MainActor, GitHub build only.
 @MainActor
 final class MusicController: ObservableObject {
@@ -14,18 +20,19 @@ final class MusicController: ObservableObject {
     @Published var trackTitle: String?
     @Published var artist: String?
     @Published var album: String?
+    @Published var currentSource: MusicSource = .appleMusic
 
     private var notifTokens: [Any] = []
     private var cancellables = Set<AnyCancellable>()
     private let queue = DispatchQueue(label: "fr.louisraille.coucou.music")
+    private var isFetching = false
 
     private var isPillActive: Bool {
         AppState.shared.activeIntegrations.contains("integration_music")
     }
 
     private init() {
-        // playerInfo fires whenever Music state changes (play/pause/track change).
-        // Extract Sendable String? values before crossing into @MainActor.
+        // 1. Apple Music playerInfo observer
         let tok1 = DistributedNotificationCenter.default().addObserver(
             forName: NSNotification.Name("com.apple.Music.playerInfo"),
             object: nil,
@@ -37,62 +44,96 @@ final class MusicController: ObservableObject {
             let artist      = info?["Artist"]        as? String
             let album       = info?["Album"]         as? String
             Task { @MainActor [weak self] in
-                self?.handlePlayerInfo(playerState: playerState, name: name, artist: artist, album: album)
+                self?.handlePlayerInfo(source: .appleMusic, playerState: playerState, name: name, artist: artist, album: album)
             }
         }
         notifTokens.append(tok1)
 
-        // Track Music launch — read current state only if granted and pill active
-        let tok2 = NSWorkspace.shared.notificationCenter.addObserver(
+        // 2. Spotify PlaybackStateChanged observer
+        let tok2 = DistributedNotificationCenter.default().addObserver(
+            forName: NSNotification.Name("com.spotify.client.PlaybackStateChanged"),
+            object: nil,
+            queue: .main
+        ) { [weak self] notif in
+            let info        = notif.userInfo
+            let playerState = info?["Player State"] as? String
+            let name        = info?["Name"]          as? String
+            let artist      = info?["Artist"]        as? String
+            let album       = info?["Album"]         as? String
+            Task { @MainActor [weak self] in
+                self?.handlePlayerInfo(source: .spotify, playerState: playerState, name: name, artist: artist, album: album)
+            }
+        }
+        notifTokens.append(tok2)
+
+        // 3. Track launch of Music or Spotify
+        let tok3 = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didLaunchApplicationNotification,
             object: nil,
             queue: .main
         ) { [weak self] notif in
             let bundleId = (notif.userInfo?[NSWorkspace.applicationUserInfoKey]
                 as? NSRunningApplication)?.bundleIdentifier
-            guard bundleId == "com.apple.Music" else { return }
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                guard self.isPillActive,
-                      UserDefaults.standard.bool(forKey: "coucou.musicAutomationGranted") else { return }
-                self.fetchAndApply()
+            if bundleId == "com.apple.Music" || bundleId == "com.spotify.client" {
+                Task { @MainActor [weak self] in
+                    self?.fetchAndApply()
+                }
             }
         }
-        notifTokens.append(tok2)
+        notifTokens.append(tok3)
 
-        // Clear state when Music quits
-        let tok3 = NSWorkspace.shared.notificationCenter.addObserver(
+        // 4. Clear state when Music/Spotify terminates
+        let tok4 = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didTerminateApplicationNotification,
             object: nil,
             queue: .main
         ) { [weak self] notif in
             let bundleId = (notif.userInfo?[NSWorkspace.applicationUserInfoKey]
                 as? NSRunningApplication)?.bundleIdentifier
-            guard bundleId == "com.apple.Music" else { return }
-            Task { @MainActor [weak self] in self?.clearState() }
-        }
-        notifTokens.append(tok3)
-
-        // Observe activeIntegrations — pill activated → initial read; deactivated → clear
-        AppState.shared.$activeIntegrations
-            .sink { [weak self] integrations in
-                guard let self else { return }
-                if integrations.contains("integration_music") {
-                    if self.isMusicRunning(),
-                       UserDefaults.standard.bool(forKey: "coucou.musicAutomationGranted") {
+            if bundleId == "com.apple.Music" || bundleId == "com.spotify.client" {
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    if !self.isMusicRunning() && !self.isSpotifyRunning() {
+                        self.clearState()
+                    } else {
                         self.fetchAndApply()
                     }
-                } else {
-                    self.clearState()
+                }
+            }
+        }
+        notifTokens.append(tok4)
+
+        // 5. Observe activeIntegrations — only sync pill task name, do not clear global state
+        AppState.shared.$activeIntegrations
+            .sink { [weak self] _ in
+                guard let self else { return }
+                self.syncTaskName()
+            }
+            .store(in: &cancellables)
+
+        // 6. Periodic sync timer (every 3s when player app is running)
+        Timer.publish(every: 3.0, on: .main, in: .common)
+            .autoconnect()
+            .sink { [weak self] _ in
+                guard let self else { return }
+                if self.isMusicRunning() || self.isSpotifyRunning() {
+                    self.fetchAndApply()
                 }
             }
             .store(in: &cancellables)
+
+        // 7. Initial query immediately upon launch
+        fetchAndApply()
     }
 
     // MARK: - Private helpers
 
-    private func isMusicRunning() -> Bool {
+    func isMusicRunning() -> Bool {
         NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == "com.apple.Music" }
+    }
+
+    func isSpotifyRunning() -> Bool {
+        NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == "com.spotify.client" }
     }
 
     // MARK: - Metadata cleaners
@@ -132,10 +173,9 @@ final class MusicController: ObservableObject {
         return raw
     }
 
-    private func handlePlayerInfo(playerState: String?, name: String?, artist inputArtist: String?, album inputAlbum: String?) {
-        guard isPillActive else { return }
-
-        let playing = playerState == "Playing"
+    private func handlePlayerInfo(source: MusicSource, playerState: String?, name: String?, artist inputArtist: String?, album inputAlbum: String?) {
+        currentSource = source
+        let playing = (playerState?.lowercased() == "playing")
         let wasPlaying = AppState.shared.musicPlaying
 
         trackTitle = name.map { Self.shortTitle($0) }.flatMap { $0.isEmpty ? nil : $0 }
@@ -151,45 +191,93 @@ final class MusicController: ObservableObject {
         }
     }
 
-    private func fetchAndApply() {
-        Task {
-            let result = await runAppleScript("""
-                tell application id "com.apple.Music"
-                    set ps to player state as string
-                    if ps is "stopped" then return {ps, "", "", ""}
-                    try
-                        set tr to current track
-                        set n to name of tr
-                    on error
-                        return {ps, "", "", ""}
-                    end try
-                    set ar to ""
-                    set al to ""
-                    try
-                        set ar to artist of tr
-                    end try
-                    try
-                        set al to album of tr
-                    end try
-                    return {ps, n, ar, al}
-                end tell
-            """)
-            guard case .success(let values) = result, values.count >= 4 else { return }
-            let playing    = values[0] == "playing"
-            let wasPlaying = AppState.shared.musicPlaying
-            trackTitle = values[1].isEmpty ? nil : Self.shortTitle(values[1])
-            artist     = values[2].isEmpty ? nil : Self.shortArtist(values[2])
-            album      = values[3].isEmpty ? nil : values[3]
-            AppState.shared.musicPlaying = playing
-            syncTaskName()
-            if playing && !wasPlaying {
-                NotificationCenter.default.post(name: .musicReveal, object: nil)
+    func fetchAndApply() {
+        guard !isFetching else { return }
+        isFetching = true
+
+        Task { [weak self] in
+            defer { self?.isFetching = false }
+            guard let self else { return }
+
+            if self.isMusicRunning() {
+                let result = await self.runAppleScript("""
+                    tell application id "com.apple.Music"
+                        set ps to player state as string
+                        if ps is "stopped" then return {ps, "", "", ""}
+                        try
+                            set tr to current track
+                            set n to name of tr
+                        on error
+                            return {ps, "", "", ""}
+                        end try
+                        set ar to ""
+                        set al to ""
+                        try
+                            set ar to artist of tr
+                        end try
+                        try
+                            set al to album of tr
+                        end try
+                        return {ps, n, ar, al}
+                    end tell
+                """)
+                if case .success(let values) = result, values.count >= 4 {
+                    let playing    = values[0].lowercased() == "playing"
+                    let wasPlaying = AppState.shared.musicPlaying
+                    self.currentSource = .appleMusic
+                    self.trackTitle = values[1].isEmpty ? nil : Self.shortTitle(values[1])
+                    self.artist     = values[2].isEmpty ? nil : Self.shortArtist(values[2])
+                    self.album      = values[3].isEmpty ? nil : values[3]
+                    AppState.shared.musicPlaying = playing
+                    self.syncTaskName()
+                    if playing && !wasPlaying {
+                        NotificationCenter.default.post(name: .musicReveal, object: nil)
+                    }
+                    return
+                }
+            }
+
+            if self.isSpotifyRunning() {
+                let result = await self.runAppleScript("""
+                    tell application id "com.spotify.client"
+                        set ps to player state as string
+                        if ps is "stopped" then return {ps, "", "", ""}
+                        try
+                            set n to name of current track
+                            set ar to artist of current track
+                            set al to album of current track
+                            return {ps, n, ar, al}
+                        on error
+                            return {ps, "", "", ""}
+                        end try
+                    end tell
+                """)
+                if case .success(let values) = result, values.count >= 4 {
+                    let playing    = values[0].lowercased() == "playing"
+                    let wasPlaying = AppState.shared.musicPlaying
+                    self.currentSource = .spotify
+                    self.trackTitle = values[1].isEmpty ? nil : Self.shortTitle(values[1])
+                    self.artist     = values[2].isEmpty ? nil : Self.shortArtist(values[2])
+                    self.album      = values[3].isEmpty ? nil : values[3]
+                    AppState.shared.musicPlaying = playing
+                    self.syncTaskName()
+                    if playing && !wasPlaying {
+                        NotificationCenter.default.post(name: .musicReveal, object: nil)
+                    }
+                    return
+                }
+            }
+
+            if !self.isMusicRunning() && !self.isSpotifyRunning() {
+                self.clearState()
             }
         }
     }
 
     private func clearState() {
-        trackTitle = nil; artist = nil; album = nil
+        trackTitle = nil
+        artist = nil
+        album = nil
         AppState.shared.musicPlaying = false
         syncTaskName()
     }
@@ -198,29 +286,49 @@ final class MusicController: ObservableObject {
         guard let idx = AppState.shared.tasks.firstIndex(where: { $0.id == "integration_music" }) else { return }
         let title = trackTitle ?? ""
         AppState.shared.tasks[idx].name = title.isEmpty
-            ? (PillCatalog.definition(for: "integration_music")?.name ?? "Apple Music")
+            ? (PillCatalog.definition(for: "integration_music")?.name ?? (currentSource == .spotify ? "Spotify" : "Apple Music"))
             : title
     }
 
     // MARK: - Playback controls
 
     func playPause() {
-        guard isMusicRunning() else { return }
-        Task { await runAppleScript(#"tell application id "com.apple.Music" to playpause"#) }
+        if currentSource == .spotify && isSpotifyRunning() {
+            Task { await runAppleScript(#"tell application id "com.spotify.client" to playpause"#) }
+        } else if isMusicRunning() {
+            Task { await runAppleScript(#"tell application id "com.apple.Music" to playpause"#) }
+        } else if isSpotifyRunning() {
+            Task { await runAppleScript(#"tell application id "com.spotify.client" to playpause"#) }
+        }
     }
 
     func nextTrack() {
-        guard isMusicRunning() else { return }
-        Task { await runAppleScript(#"tell application id "com.apple.Music" to next track"#) }
+        if currentSource == .spotify && isSpotifyRunning() {
+            Task { await runAppleScript(#"tell application id "com.spotify.client" to next track"#) }
+        } else if isMusicRunning() {
+            Task { await runAppleScript(#"tell application id "com.apple.Music" to next track"#) }
+        } else if isSpotifyRunning() {
+            Task { await runAppleScript(#"tell application id "com.spotify.client" to next track"#) }
+        }
     }
 
     func previousTrack() {
-        guard isMusicRunning() else { return }
-        Task { await runAppleScript(#"tell application id "com.apple.Music" to back track"#) }
+        if currentSource == .spotify && isSpotifyRunning() {
+            Task { await runAppleScript(#"tell application id "com.spotify.client" to previous track"#) }
+        } else if isMusicRunning() {
+            Task { await runAppleScript(#"tell application id "com.apple.Music" to back track"#) }
+        } else if isSpotifyRunning() {
+            Task { await runAppleScript(#"tell application id "com.spotify.client" to previous track"#) }
+        }
     }
 
     func openMusic() {
-        if let app = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier == "com.apple.Music" }) {
+        if currentSource == .spotify && isSpotifyRunning(),
+           let app = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier == "com.spotify.client" }) {
+            app.activate(options: .activateIgnoringOtherApps)
+        } else if let app = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier == "com.apple.Music" }) {
+            app.activate(options: .activateIgnoringOtherApps)
+        } else if let app = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier == "com.spotify.client" }) {
             app.activate(options: .activateIgnoringOtherApps)
         } else {
             NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Music.app"))

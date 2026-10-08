@@ -4778,6 +4778,10 @@ struct MusicCardView: View {
                             .foregroundColor(Color(hex: "#F5F6F8"))
                             .lineLimit(1).truncationMode(.tail)
                             .frame(maxWidth: 150, alignment: .leading)
+                    } else {
+                        Text(controller.currentSource.rawValue)
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(Color(hex: "#F5F6F8"))
                     }
                 }
                 .padding(.top, 6)
@@ -4786,6 +4790,13 @@ struct MusicCardView: View {
                 // Line 2: artist
                 if let artist = controller.artist {
                     Text(artist)
+                        .font(.system(size: 11))
+                        .foregroundColor(Color(hex: "#8E939C"))
+                        .lineLimit(1).truncationMode(.tail)
+                        .frame(maxWidth: 150, alignment: .leading)
+                        .padding(.leading, 108)
+                } else {
+                    Text(String(localized: "Chưa phát nhạc"))
                         .font(.system(size: 11))
                         .foregroundColor(Color(hex: "#8E939C"))
                         .lineLimit(1).truncationMode(.tail)
