@@ -150,6 +150,11 @@ final class AppState: ObservableObject {
         didSet { UserDefaults.standard.set(mainPillId, forKey: "mainPill") }
     }
 
+    // Overview right card widget selection (persisted). Options: "system", "clock", "music", "shortcuts", "pills"
+    @Published var overviewWidgetType: String = UserDefaults.standard.string(forKey: "coucouOverviewWidgetType") ?? "system" {
+        didSet { UserDefaults.standard.set(overviewWidgetType, forKey: "coucouOverviewWidgetType") }
+    }
+
     // Dynamically fetched model lists for the in-chat picker (keyed by provider)
     @Published var fetchedProviderModels: [ChatProvider: [(id: String, label: String)]] = [:]
     @Published var providerModelFetchError: [ChatProvider: String] = [:]

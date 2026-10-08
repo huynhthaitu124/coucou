@@ -1,4 +1,6 @@
 import SwiftUI
+import Darwin
+import IOKit.ps
 
 // MARK: - Dispatch view content by IslandView
 
@@ -44,7 +46,7 @@ struct OverviewView: View {
         HStack(spacing: 10) {
             // Left card: title row + ticker below + ↗ button overlay
             ZStack(alignment: .topLeading) {
-                CardBackground(wash: nil)
+                CardBackground(wash: nil, showMochiHalo: true)
 
                 // Title row + ticker stacked (or integration card)
                 if let agent = agent {
@@ -114,9 +116,9 @@ struct OverviewView: View {
             }
             .frame(width: 322)
 
-            // Right card: agent pills
-            CardBackground(wash: nil) {
-                AgentPillsView(state: state)
+            // Right card: native macOS widget
+            CardBackground(wash: nil, showMochiHalo: false) {
+                OverviewRightCardView(state: state)
             }
         }
         .onChange(of: state.focusId) { _, _ in showingN8nDetail = false }
@@ -3848,6 +3850,663 @@ struct TickerShimmerText: View {
     }
 }
 
+// MARK: - Native macOS Overview Widgets
+
+enum OverviewWidgetType: String, CaseIterable, Identifiable {
+    case system = "system"
+    case clock = "clock"
+    case music = "music"
+    case shortcuts = "shortcuts"
+    case pills = "pills"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .system: return "Giám sát hệ thống"
+        case .clock: return "Đồng hồ & Lịch"
+        case .music: return "Trình phát nhạc"
+        case .shortcuts: return "Phím tắt macOS"
+        case .pills: return "Tác vụ & Tích hợp"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .system: return "CPU, RAM & Pin"
+        case .clock: return "Thời gian & Lịch"
+        case .music: return "Apple Music & Spotify"
+        case .shortcuts: return "Khóa máy, Terminal, Finder"
+        case .pills: return "Các tiến trình Coucou"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .system: return "cpu"
+        case .clock: return "clock"
+        case .music: return "music.note"
+        case .shortcuts: return "command"
+        case .pills: return "square.grid.2x2"
+        }
+    }
+}
+
+@MainActor
+final class MacSystemMetrics: ObservableObject {
+    static let shared = MacSystemMetrics()
+
+    @Published var cpuUsage: Double = 0.12
+    @Published var ramUsage: Double = 0.45
+    @Published var ramUsedGB: Double = 8.0
+    @Published var ramTotalGB: Double = 16.0
+    @Published var batteryPercent: Int = 100
+    @Published var isCharging: Bool = false
+    @Published var hasBattery: Bool = true
+
+    private var previousCpuLoad: host_cpu_load_info?
+    private var timer: Timer?
+
+    private init() {
+        refresh()
+        timer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.refresh()
+            }
+        }
+    }
+
+    func refresh() {
+        // RAM
+        var stats = vm_statistics64()
+        var count = mach_msg_type_number_t(MemoryLayout<vm_statistics64>.size / MemoryLayout<integer_t>.size)
+        let kerr = withUnsafeMutablePointer(to: &stats) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                host_statistics64(mach_host_self(), HOST_VM_INFO64, $0, &count)
+            }
+        }
+        if kerr == KERN_SUCCESS {
+            let pageSize = UInt64(getpagesize())
+            let active = UInt64(stats.active_count) * pageSize
+            let wired = UInt64(stats.wire_count) * pageSize
+            let compressed = UInt64(stats.compressor_page_count) * pageSize
+            let used = active + wired + compressed
+            let total = ProcessInfo.processInfo.physicalMemory
+            ramUsedGB = Double(used) / 1_073_741_824.0
+            ramTotalGB = Double(total) / 1_073_741_824.0
+            ramUsage = min(1.0, max(0.0, Double(used) / Double(total)))
+        }
+
+        // CPU
+        var cpuLoad = host_cpu_load_info()
+        var cpuCount = mach_msg_type_number_t(MemoryLayout<host_cpu_load_info>.size / MemoryLayout<integer_t>.size)
+        let cpuErr = withUnsafeMutablePointer(to: &cpuLoad) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(cpuCount)) {
+                host_statistics(mach_host_self(), HOST_CPU_LOAD_INFO, $0, &cpuCount)
+            }
+        }
+        if cpuErr == KERN_SUCCESS {
+            if let prev = previousCpuLoad {
+                let user = Double(cpuLoad.cpu_ticks.0 - prev.cpu_ticks.0)
+                let sys = Double(cpuLoad.cpu_ticks.1 - prev.cpu_ticks.1)
+                let idle = Double(cpuLoad.cpu_ticks.2 - prev.cpu_ticks.2)
+                let nice = Double(cpuLoad.cpu_ticks.3 - prev.cpu_ticks.3)
+                let totalTicks = user + sys + idle + nice
+                if totalTicks > 0 {
+                    cpuUsage = min(1.0, max(0.0, (user + sys + nice) / totalTicks))
+                }
+            }
+            previousCpuLoad = cpuLoad
+        }
+
+        // Battery
+        if let snapshot = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
+           let sources = IOPSCopyPowerSourcesList(snapshot)?.takeRetainedValue() as? [CFTypeRef],
+           !sources.isEmpty {
+            hasBattery = true
+            for src in sources {
+                if let desc = IOPSGetPowerSourceDescription(snapshot, src)?.takeUnretainedValue() as? [String: Any],
+                   let cur = desc[kIOPSCurrentCapacityKey] as? Int,
+                   let maxCap = desc[kIOPSMaxCapacityKey] as? Int, maxCap > 0 {
+                    batteryPercent = Int(Double(cur) / Double(maxCap) * 100)
+                    isCharging = (desc[kIOPSIsChargingKey] as? Bool) ?? false
+                    break
+                }
+            }
+        } else {
+            hasBattery = false
+        }
+    }
+}
+
+// 1. Native System Widget
+struct NativeSystemWidgetView: View {
+    @ObservedObject private var metrics = MacSystemMetrics.shared
+
+    var body: some View {
+        VStack(spacing: 7) {
+            // Header
+            HStack(spacing: 5) {
+                Image(systemName: "cpu")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(Color(hex: "#38BDF8"))
+                Text("Mac System")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(Color(hex: "#F5F6F8"))
+                Spacer()
+                if metrics.hasBattery {
+                    HStack(spacing: 3) {
+                        Image(systemName: metrics.isCharging ? "bolt.batteryblock.fill" : "battery.75")
+                            .font(.system(size: 10))
+                            .foregroundColor(metrics.isCharging ? Color(hex: "#10B981") : Color(hex: "#9CA3AF"))
+                        Text("\(metrics.batteryPercent)%")
+                            .font(.system(size: 10, weight: .medium, design: .monospaced))
+                            .foregroundColor(Color(hex: "#D1D5DB"))
+                    }
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1.5)
+                    .background(Color.white.opacity(0.06))
+                    .clipShape(Capsule())
+                }
+            }
+
+            // CPU Row
+            HStack(spacing: 8) {
+                Text("CPU")
+                    .font(.system(size: 9.5, weight: .medium))
+                    .foregroundColor(Color(hex: "#9CA3AF"))
+                    .frame(width: 26, alignment: .leading)
+                GeometryReader { g in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(Color.white.opacity(0.10))
+                        Capsule()
+                            .fill(LinearGradient(colors: [Color(hex: "#38BDF8"), Color(hex: "#818CF8")], startPoint: .leading, endPoint: .trailing))
+                            .frame(width: max(4, g.size.width * CGFloat(metrics.cpuUsage)))
+                    }
+                }
+                .frame(height: 5.5)
+                Text("\(Int(metrics.cpuUsage * 100))%")
+                    .font(.system(size: 9.5, weight: .medium, design: .monospaced))
+                    .foregroundColor(Color(hex: "#F3F4F6"))
+                    .frame(width: 32, alignment: .trailing)
+            }
+
+            // RAM Row
+            HStack(spacing: 8) {
+                Text("RAM")
+                    .font(.system(size: 9.5, weight: .medium))
+                    .foregroundColor(Color(hex: "#9CA3AF"))
+                    .frame(width: 26, alignment: .leading)
+                GeometryReader { g in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(Color.white.opacity(0.10))
+                        Capsule()
+                            .fill(LinearGradient(colors: [Color(hex: "#A855F7"), Color(hex: "#EC4899")], startPoint: .leading, endPoint: .trailing))
+                            .frame(width: max(4, g.size.width * CGFloat(metrics.ramUsage)))
+                    }
+                }
+                .frame(height: 5.5)
+                Text("\(String(format: "%.1f", metrics.ramUsedGB))G")
+                    .font(.system(size: 9.5, weight: .medium, design: .monospaced))
+                    .foregroundColor(Color(hex: "#F3F4F6"))
+                    .frame(width: 32, alignment: .trailing)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Utilities/Activity Monitor.app"))
+        }
+        .help("Nhấp để mở Activity Monitor")
+    }
+}
+
+// 2. Native Clock & Calendar Widget
+struct NativeClockWidgetView: View {
+    @State private var currentDate = Date()
+    private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+
+    private var timeString: String {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm"
+        return f.string(from: currentDate)
+    }
+
+    private var secondsString: String {
+        let f = DateFormatter()
+        f.dateFormat = ":ss"
+        return f.string(from: currentDate)
+    }
+
+    private var dayOfWeekString: String {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "vi_VN")
+        f.dateFormat = "EEEE"
+        return f.string(from: currentDate).capitalized
+    }
+
+    private var dateString: String {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "vi_VN")
+        f.dateFormat = "dd/MM/yyyy"
+        return f.string(from: currentDate)
+    }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(alignment: .firstTextBaseline, spacing: 1) {
+                    Text(timeString)
+                        .font(.system(size: 26, weight: .bold, design: .rounded))
+                        .foregroundColor(Color(hex: "#F9FAFB"))
+                    Text(secondsString)
+                        .font(.system(size: 13, weight: .medium, design: .monospaced))
+                        .foregroundColor(Color(hex: "#818CF8"))
+                }
+                Text(dayOfWeekString)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(Color(hex: "#9CA3AF"))
+            }
+            Spacer()
+            VStack(alignment: .trailing, spacing: 3) {
+                Image(systemName: "calendar")
+                    .font(.system(size: 13))
+                    .foregroundColor(Color(hex: "#38BDF8"))
+                Text(dateString)
+                    .font(.system(size: 10.5, weight: .medium, design: .monospaced))
+                    .foregroundColor(Color(hex: "#D1D5DB"))
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .onReceive(timer) { input in
+            currentDate = input
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Calendar.app"))
+        }
+        .help("Nhấp để mở Lịch macOS")
+    }
+}
+
+// 3. Native Music Widget
+struct NativeMusicWidgetView: View {
+    #if !APPSTORE
+    @ObservedObject private var music = MusicController.shared
+    #endif
+
+    var body: some View {
+        VStack(spacing: 6) {
+            #if !APPSTORE
+            HStack(spacing: 8) {
+                ZStack {
+                    Circle()
+                        .fill(LinearGradient(colors: [Color(hex: "#EC4899"), Color(hex: "#8B5CF6")], startPoint: .topLeading, endPoint: .bottomTrailing))
+                        .frame(width: 26, height: 26)
+                    Image(systemName: "music.note")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(.white)
+                }
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(music.trackTitle ?? "Chưa phát nhạc")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(Color(hex: "#F9FAFB"))
+                        .lineLimit(1)
+                    Text(music.artist ?? "Apple Music / Spotify")
+                        .font(.system(size: 9.5))
+                        .foregroundColor(Color(hex: "#9CA3AF"))
+                        .lineLimit(1)
+                }
+                Spacer()
+            }
+
+            HStack(spacing: 10) {
+                Button {
+                    music.previousTrack()
+                } label: {
+                    Image(systemName: "backward.fill")
+                        .font(.system(size: 9.5))
+                        .foregroundColor(Color(hex: "#9CA3AF"))
+                        .frame(width: 20, height: 20)
+                        .background(Color.white.opacity(0.06))
+                        .clipShape(Circle())
+                }
+                .buttonStyle(.plain)
+
+                Button {
+                    music.playPause()
+                } label: {
+                    Image(systemName: AppState.shared.musicPlaying ? "pause.fill" : "play.fill")
+                        .font(.system(size: 10))
+                        .foregroundColor(.white)
+                        .frame(width: 24, height: 24)
+                        .background(Color(hex: "#38BDF8"))
+                        .clipShape(Circle())
+                }
+                .buttonStyle(.plain)
+
+                Button {
+                    music.nextTrack()
+                } label: {
+                    Image(systemName: "forward.fill")
+                        .font(.system(size: 9.5))
+                        .foregroundColor(Color(hex: "#9CA3AF"))
+                        .frame(width: 20, height: 20)
+                        .background(Color.white.opacity(0.06))
+                        .clipShape(Circle())
+                }
+                .buttonStyle(.plain)
+
+                Spacer()
+
+                Button {
+                    music.openMusic()
+                } label: {
+                    Text("Mở App")
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundColor(Color(hex: "#9CA3AF"))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2.5)
+                        .background(Color.white.opacity(0.06))
+                        .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+            #else
+            Text("Trình phát nhạc")
+                .font(.system(size: 11))
+                .foregroundColor(Color(hex: "#9CA3AF"))
+            #endif
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+    }
+}
+
+// 4. Native Shortcuts Widget
+struct NativeShortcutsWidgetView: View {
+    var body: some View {
+        HStack(spacing: 6) {
+            ShortcutItemBtn(icon: "lock.fill", label: "Khóa Mac", color: "#EF4444") {
+                #if !APPSTORE
+                var err: NSDictionary?
+                NSAppleScript(source: "tell application \"System Events\" to keystroke \"q\" using {control down, command down}")?.executeAndReturnError(&err)
+                #endif
+            }
+            ShortcutItemBtn(icon: "terminal.fill", label: "Terminal", color: "#38BDF8") {
+                NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Utilities/Terminal.app"))
+            }
+            ShortcutItemBtn(icon: "folder.fill", label: "Finder", color: "#F59E0B") {
+                NSWorkspace.shared.open(FileManager.default.homeDirectoryForCurrentUser)
+            }
+            ShortcutItemBtn(icon: "chart.bar.xaxis", label: "Activity", color: "#10B981") {
+                NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Utilities/Activity Monitor.app"))
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 8)
+    }
+}
+
+struct ShortcutItemBtn: View {
+    let icon: String
+    let label: String
+    let color: String
+    let action: () -> Void
+    @State private var hovered = false
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 3.5) {
+                ZStack {
+                    Circle()
+                        .fill(Color(hex: color).opacity(hovered ? 0.28 : 0.12))
+                        .frame(width: 26, height: 26)
+                    Image(systemName: icon)
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .foregroundColor(Color(hex: color))
+                }
+                Text(label)
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundColor(hovered ? .white : Color(hex: "#9CA3AF"))
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(hovered ? Color.white.opacity(0.05) : Color.clear)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
+        .buttonStyle(.plain)
+        .onHover { hovered = $0 }
+    }
+}
+
+// 5. Empty State / Add Widget Button
+struct NativeEmptyWidgetView: View {
+    let onAdd: () -> Void
+    @State private var hovered = false
+
+    var body: some View {
+        Button(action: onAdd) {
+            VStack(spacing: 5) {
+                ZStack {
+                    Circle()
+                        .fill(Color.white.opacity(hovered ? 0.14 : 0.07))
+                        .frame(width: 26, height: 26)
+                    Image(systemName: "plus")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(Color(hex: "#38BDF8"))
+                }
+                Text("Thêm Widget macOS")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(hovered ? Color.white : Color(hex: "#9CA3AF"))
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .buttonStyle(.plain)
+        .onHover { hovered = $0 }
+    }
+}
+
+// 6. Inline Widget Picker Overlay
+struct NativeWidgetPickerOverlay: View {
+    @ObservedObject var state: AppState
+    @Binding var isPresented: Bool
+
+    let columns = [
+        GridItem(.flexible(), spacing: 6),
+        GridItem(.flexible(), spacing: 6)
+    ]
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 16)
+                .fill(Color(hex: "#0F1013").opacity(0.97))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16)
+                        .stroke(Color.white.opacity(0.10), lineWidth: 1)
+                )
+
+            VStack(spacing: 5) {
+                HStack {
+                    Text("Chọn Widget macOS")
+                        .font(.system(size: 10.5, weight: .bold))
+                        .foregroundColor(Color(hex: "#F9FAFB"))
+                    Spacer()
+                    Button {
+                        withAnimation { isPresented = false }
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 12))
+                            .foregroundColor(Color(hex: "#71717A"))
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 10)
+                .padding(.top, 6)
+
+                LazyVGrid(columns: columns, spacing: 5) {
+                    ForEach(OverviewWidgetType.allCases) { w in
+                        Button {
+                            withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                                state.overviewWidgetType = w.rawValue
+                                SoundEngine.shared.play("blip")
+                                isPresented = false
+                            }
+                        } label: {
+                            HStack(spacing: 5) {
+                                Image(systemName: w.icon)
+                                    .font(.system(size: 10.5, weight: .semibold))
+                                    .foregroundColor(Color(hex: "#38BDF8"))
+                                    .frame(width: 14)
+                                VStack(alignment: .leading, spacing: 0.5) {
+                                    Text(w.title)
+                                        .font(.system(size: 9.5, weight: .semibold))
+                                        .foregroundColor(Color(hex: "#F3F4F6"))
+                                        .lineLimit(1)
+                                    Text(w.subtitle)
+                                        .font(.system(size: 8))
+                                        .foregroundColor(Color(hex: "#9CA3AF"))
+                                        .lineLimit(1)
+                                }
+                                Spacer(minLength: 0)
+                            }
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 4.5)
+                            .background(Color.white.opacity(state.overviewWidgetType == w.rawValue ? 0.12 : 0.04))
+                            .clipShape(RoundedRectangle(cornerRadius: 7))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 7)
+                                    .stroke(state.overviewWidgetType == w.rawValue ? Color(hex: "#38BDF8").opacity(0.6) : Color.clear, lineWidth: 1)
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 8)
+                .padding(.bottom, 6)
+            }
+        }
+    }
+}
+
+// 7. Right Card Container View
+struct OverviewRightCardView: View {
+    @ObservedObject var state: AppState
+    @State private var isHovered: Bool = false
+    @State private var showingPickerSheet: Bool = false
+
+    var currentWidgetType: OverviewWidgetType {
+        OverviewWidgetType(rawValue: state.overviewWidgetType) ?? .system
+    }
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            // Widget view
+            Group {
+                switch currentWidgetType {
+                case .system:
+                    NativeSystemWidgetView()
+                case .clock:
+                    NativeClockWidgetView()
+                case .music:
+                    NativeMusicWidgetView()
+                case .shortcuts:
+                    NativeShortcutsWidgetView()
+                case .pills:
+                    if state.tasks.filter({ $0.id != state.focusId }).isEmpty {
+                        NativeEmptyWidgetView {
+                            withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                                showingPickerSheet = true
+                            }
+                        }
+                    } else {
+                        AgentPillsView(state: state)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            // Switch / Add widget menu button
+            Menu {
+                Text("Widget macOS").font(.headline)
+                Divider()
+                ForEach(OverviewWidgetType.allCases) { w in
+                    Button {
+                        withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                            state.overviewWidgetType = w.rawValue
+                            SoundEngine.shared.play("blip")
+                        }
+                    } label: {
+                        HStack {
+                            if state.overviewWidgetType == w.rawValue {
+                                Image(systemName: "checkmark")
+                            }
+                            Text(w.title)
+                        }
+                    }
+                }
+                Divider()
+                Button {
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                        showingPickerSheet = true
+                    }
+                } label: {
+                    Label("Thêm Widget khác...", systemImage: "plus.circle")
+                }
+            } label: {
+                Image(systemName: "square.grid.2x2")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundColor(isHovered ? Color.white : Color(hex: "#71717A"))
+                    .frame(width: 18, height: 18)
+                    .background(Color.white.opacity(isHovered ? 0.12 : 0.04))
+                    .clipShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .padding(.top, 5)
+            .padding(.trailing, 7)
+            .opacity(isHovered ? 1.0 : 0.4)
+            .help("Chọn hoặc đổi widget macOS")
+
+            // Inline Picker overlay
+            if showingPickerSheet {
+                NativeWidgetPickerOverlay(state: state, isPresented: $showingPickerSheet)
+                    .transition(.opacity.combined(with: .scale(scale: 0.96)))
+            }
+        }
+        .onHover { isHovered = $0 }
+        .contextMenu {
+            Text("Widget macOS").font(.headline)
+            Divider()
+            ForEach(OverviewWidgetType.allCases) { w in
+                Button {
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                        state.overviewWidgetType = w.rawValue
+                        SoundEngine.shared.play("blip")
+                    }
+                } label: {
+                    HStack {
+                        if state.overviewWidgetType == w.rawValue {
+                            Image(systemName: "checkmark")
+                        }
+                        Text(w.title)
+                    }
+                }
+            }
+            Divider()
+            Button {
+                withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                    showingPickerSheet = true
+                }
+            } label: {
+                Label("Thêm Widget...", systemImage: "plus.circle")
+            }
+        }
+    }
+}
+
 // MARK: - Agent pills (overview right card)
 
 struct AgentPillsView: View {
@@ -4539,6 +5198,7 @@ struct CardBackgroundLayer: View {
     let cardRadius: CGFloat
     let effectiveBloomColor: Color
     let secondaryGlowColor: Color
+    var showMochiHalo: Bool = true
     @ObservedObject private var state: AppState = AppState.shared
     @State private var lastTransitionTime: Double = Date().timeIntervalSinceReferenceDate
 
@@ -4647,36 +5307,38 @@ struct CardBackgroundLayer: View {
                     .blendMode(.plusLighter)
                     .opacity(bandAlpha * 0.92)
 
-                // 5. Character Backlight Halo (Vầng hào quang hình cầu phát sáng sau lưng Mochi)
-                GeometryReader { geo in
-                    let isChatView = state.view == .prompt || state.view == .searching || state.view == .result
-                    // Trong prompt/chat card, Mochi nằm ở tọa độ avatar cố định (56, 56)
-                    let haloX: CGFloat = isChatView ? 56.0 : (geo.size.width > 220 ? 58.0 : geo.size.width * 0.22)
-                    let haloY: CGFloat = (isChatView || geo.size.height > 110) ? 56.0 : (geo.size.height * 0.50)
-                    let haloBreath = sin(time * 1.5) * 0.04
-                    let haloSize: CGFloat = 118.0 * (1.0 + CGFloat(haloBreath) + CGFloat(surge) * 0.06)
-                    let haloOpacity = min(0.92, 0.55 + CGFloat(surge) * 0.22 + CGFloat(haloBreath))
+                // 5. Character Backlight Halo (Vầng hào quang hình cầu phát sáng sau lưng Mochi - chỉ hiển thị trên card chứa Mochi)
+                if showMochiHalo {
+                    GeometryReader { geo in
+                        let isChatView = state.view == .prompt || state.view == .searching || state.view == .result
+                        // Trong prompt/chat card, Mochi nằm ở tọa độ avatar cố định (56, 56)
+                        let haloX: CGFloat = isChatView ? 56.0 : (geo.size.width > 220 ? 58.0 : geo.size.width * 0.22)
+                        let haloY: CGFloat = (isChatView || geo.size.height > 110) ? 56.0 : (geo.size.height * 0.50)
+                        let haloBreath = sin(time * 1.5) * 0.04
+                        let haloSize: CGFloat = 118.0 * (1.0 + CGFloat(haloBreath) + CGFloat(surge) * 0.06)
+                        let haloOpacity = min(0.92, 0.55 + CGFloat(surge) * 0.22 + CGFloat(haloBreath))
 
-                    Circle()
-                        .fill(
-                            RadialGradient(
-                                gradient: Gradient(stops: [
-                                    .init(color: Color.white.opacity(0.35), location: 0),
-                                    .init(color: effectiveBloomColor.opacity(haloOpacity), location: 0.35),
-                                    .init(color: effectiveBloomColor.opacity(haloOpacity * 0.28), location: 0.68),
-                                    .init(color: .clear, location: 0.90)
-                                ]),
-                                center: .center,
-                                startRadius: 2,
-                                endRadius: haloSize / 2
+                        Circle()
+                            .fill(
+                                RadialGradient(
+                                    gradient: Gradient(stops: [
+                                        .init(color: Color.white.opacity(0.35), location: 0),
+                                        .init(color: effectiveBloomColor.opacity(haloOpacity), location: 0.35),
+                                        .init(color: effectiveBloomColor.opacity(haloOpacity * 0.28), location: 0.68),
+                                        .init(color: .clear, location: 0.90)
+                                    ]),
+                                    center: .center,
+                                    startRadius: 2,
+                                    endRadius: haloSize / 2
+                                )
                             )
-                        )
-                        .frame(width: haloSize, height: haloSize)
-                        .position(x: haloX, y: haloY)
-                        .blur(radius: 16)
-                        .blendMode(.plusLighter)
+                            .frame(width: haloSize, height: haloSize)
+                            .position(x: haloX, y: haloY)
+                            .blur(radius: 16)
+                            .blendMode(.plusLighter)
+                    }
+                    .clipShape(RoundedRectangle(cornerRadius: cardRadius, style: .continuous))
                 }
-                .clipShape(RoundedRectangle(cornerRadius: cardRadius, style: .continuous))
 
                 // 6. Top Specular Glass Sheen (Lớp phản xạ mép kính trên tinh tế)
                 RoundedRectangle(cornerRadius: cardRadius, style: .continuous)
@@ -4718,11 +5380,13 @@ struct CardBackground<Content: View>: View {
     enum Wash { case red, green, pink, amber, cyan, indigo, soft }
 
     let wash: Wash?
+    var showMochiHalo: Bool
     let content: (() -> Content)?
     @ObservedObject private var state: AppState = AppState.shared
 
-    init(wash: Wash?, @ViewBuilder content: @escaping () -> Content) {
+    init(wash: Wash?, showMochiHalo: Bool = true, @ViewBuilder content: @escaping () -> Content) {
         self.wash = wash
+        self.showMochiHalo = showMochiHalo
         self.content = content
     }
 
@@ -4792,7 +5456,8 @@ struct CardBackground<Content: View>: View {
             CardBackgroundLayer(
                 cardRadius: cardRadius,
                 effectiveBloomColor: effectiveBloomColor,
-                secondaryGlowColor: secondaryGlowColor
+                secondaryGlowColor: secondaryGlowColor,
+                showMochiHalo: showMochiHalo
             )
             .animation(.easeInOut(duration: 0.38), value: state.effectiveState)
 
@@ -4804,8 +5469,9 @@ struct CardBackground<Content: View>: View {
 }
 
 extension CardBackground where Content == EmptyView {
-    init(wash: Wash?) {
+    init(wash: Wash?, showMochiHalo: Bool = true) {
         self.wash = wash
+        self.showMochiHalo = showMochiHalo
         self.content = nil
     }
 
@@ -4814,7 +5480,8 @@ extension CardBackground where Content == EmptyView {
         return CardBackgroundLayer(
             cardRadius: cardRadius,
             effectiveBloomColor: effectiveBloomColor,
-            secondaryGlowColor: secondaryGlowColor
+            secondaryGlowColor: secondaryGlowColor,
+            showMochiHalo: showMochiHalo
         )
         .animation(.easeInOut(duration: 0.38), value: state.effectiveState)
     }
