@@ -912,12 +912,8 @@ func botPosition(mode: IslandMode, view: IslandView, islandW: CGFloat, islandH: 
         let cx = layout.botX
         let cy: CGFloat
         if view == .prompt || view == .searching || view == .result {
-            // Chat prompt: Coucou sits at center-left of the card
-            if islandH > 320 {
-                cy = 136
-            } else {
-                cy = 98
-            }
+            // Chat prompt: Coucou sits at top-left avatar position of the card
+            cy = 98
         } else if let fixedY = layout.botY {
             cy = fixedY
         } else {

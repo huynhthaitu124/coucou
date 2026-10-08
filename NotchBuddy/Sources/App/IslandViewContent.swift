@@ -4541,25 +4541,50 @@ struct CardBackgroundLayer: View {
     let secondaryGlowColor: Color
     @ObservedObject private var state: AppState = AppState.shared
     @State private var lastTransitionTime: Double = Date().timeIntervalSinceReferenceDate
+    @State private var isCardHovered: Bool = false
+
+    private func triggerSurge() {
+        lastTransitionTime = Date().timeIntervalSinceReferenceDate
+    }
 
     var body: some View {
         TimelineView(.animation(paused: state.mode != .expanded)) { tl in
             let time = tl.date.timeIntervalSinceReferenceDate
             let elapsed = time - lastTransitionTime
-            let surgeDuration: Double = 1.15
+            let surgeDuration: Double = 1.20
             let isSurging = elapsed < surgeDuration
 
-            // Normalized transition progress p: 0.0 -> 1.0
-            let p = isSurging ? min(1.0, max(0.0, elapsed / surgeDuration)) : 1.0
-            let ease = isSurging ? (1.0 - pow(1.0 - p, 3.0)) : 1.0
-            let surge = isSurging ? sin(p * .pi) : 0.0
+            // Phản hồi tương tác: tăng tốc spring nhẹ (~0.24s) rồi dịu êm về trạng thái nghỉ
+            let surge: Double = {
+                guard isSurging else { return 0.0 }
+                let p = elapsed / surgeDuration // 0.0 -> 1.0
+                if p < 0.22 {
+                    return sin((p / 0.22) * (.pi / 2.0))
+                } else {
+                    let decay = (p - 0.22) / 0.78
+                    return cos(decay * (.pi / 2.0))
+                }
+            }()
 
-            // Hơi thở hữu cơ nhẹ nhàng khi idle
-            let idleBreath = sin(time * 0.85) * 0.035
+            // Hơi thở nhẹ nhàng tự nhiên khi idle
+            let idleBreath = sin(time * 0.90) * 0.035
 
-            // Độ mở rộng của dải sáng: khi chuyển state, từ giữa (0.08) dàn nhanh ra 2 bên (0.50)
-            let spread = isSurging ? (0.08 + CGFloat(ease) * 0.42) : 0.50
-            let bandAlpha = 0.62 + idleBreath + surge * 0.25
+            // "từ vị trí hiện tại dài ra 1 chút":
+            // Vị trí hiện tại (idle): bám đều mép đáy và bo qua 2 góc cong đáy [0.07, 0.93]
+            // Khi tương tác: từ vị trí hiện tại dài thêm ra 2 bên mép lên tới [0.00, 1.00]
+            let lengthDelta: CGFloat = 0.07 * CGFloat(surge) + (isCardHovered ? 0.03 : 0.0)
+            let trimStart: CGFloat = max(0.0, 0.07 - lengthDelta)
+            let trimEnd: CGFloat = min(1.0, 0.93 + lengthDelta)
+
+            // "to ra 1 chút": bề dày của dải và độ tỏa blur nở rộng khi có tương tác
+            let widthGrowth: CGFloat = 12.0 * CGFloat(surge) + (isCardHovered ? 5.0 : 0.0)
+            let coreWidth: CGFloat = 22.0 + widthGrowth
+            let diffWidth: CGFloat = 44.0 + widthGrowth * 1.5
+            let filamentWidth: CGFloat = 3.0 + widthGrowth * 0.1
+
+            // "sáng ra 1 chút": phát sáng bừng lên khi có tương tác rồi dịu về mức nghỉ
+            let alphaBoost: CGFloat = 0.35 * CGFloat(surge) + (isCardHovered ? 0.10 : 0.0)
+            let bandAlpha: CGFloat = min(0.96, 0.48 + CGFloat(idleBreath) + alphaBoost)
 
             ZStack {
                 // 1. Deep Obsidian Base Plate (Nền đen OLED sâu chuẩn gốc)
@@ -4577,59 +4602,61 @@ struct CardBackgroundLayer: View {
 
                 // 2. Lớp tỏa sáng mềm rộng (Soft Ambient Diffusion ôm mép đáy)
                 BottomEdgeBandShape(radius: cardRadius)
-                    .trim(from: max(0, 0.50 - spread), to: min(1, 0.50 + spread))
+                    .trim(from: trimStart, to: trimEnd)
                     .stroke(
                         LinearGradient(
                             colors: [effectiveBloomColor.opacity(0.85), secondaryGlowColor.opacity(0.85)],
                             startPoint: .leading,
                             endPoint: .trailing
                         ),
-                        style: StrokeStyle(lineWidth: 54, lineCap: .round, lineJoin: .round)
+                        style: StrokeStyle(lineWidth: diffWidth, lineCap: .round, lineJoin: .round)
                     )
-                    .blur(radius: 24)
+                    .blur(radius: 22.0 + CGFloat(surge) * 6.0)
                     .clipShape(RoundedRectangle(cornerRadius: cardRadius, style: .continuous))
                     .blendMode(.plusLighter)
-                    .opacity(bandAlpha * 0.55)
+                    .opacity(bandAlpha * 0.58)
 
                 // 3. Dải quang phổ chính bám mép đáy và bo cong theo góc card (Core Luminous Band)
                 BottomEdgeBandShape(radius: cardRadius)
-                    .trim(from: max(0, 0.50 - spread), to: min(1, 0.50 + spread))
+                    .trim(from: trimStart, to: trimEnd)
                     .stroke(
                         LinearGradient(
                             colors: [effectiveBloomColor, secondaryGlowColor],
                             startPoint: .leading,
                             endPoint: .trailing
                         ),
-                        style: StrokeStyle(lineWidth: 26, lineCap: .round, lineJoin: .round)
+                        style: StrokeStyle(lineWidth: coreWidth, lineCap: .round, lineJoin: .round)
                     )
-                    .blur(radius: 12)
+                    .blur(radius: 11.0 + CGFloat(surge) * 3.0)
                     .clipShape(RoundedRectangle(cornerRadius: cardRadius, style: .continuous))
                     .blendMode(.plusLighter)
-                    .opacity(bandAlpha * 0.82)
+                    .opacity(bandAlpha * 0.85)
 
                 // 4. Viền bắt sáng sắc nét mép trong (Inner Edge Filament)
                 BottomEdgeBandShape(radius: cardRadius)
-                    .trim(from: max(0, 0.50 - spread), to: min(1, 0.50 + spread))
+                    .trim(from: trimStart, to: trimEnd)
                     .stroke(
                         LinearGradient(
                             colors: [effectiveBloomColor, secondaryGlowColor],
                             startPoint: .leading,
                             endPoint: .trailing
                         ),
-                        style: StrokeStyle(lineWidth: 3.5, lineCap: .round, lineJoin: .round)
+                        style: StrokeStyle(lineWidth: filamentWidth, lineCap: .round, lineJoin: .round)
                     )
-                    .blur(radius: 2)
+                    .blur(radius: 2.0)
                     .clipShape(RoundedRectangle(cornerRadius: cardRadius, style: .continuous))
                     .blendMode(.plusLighter)
-                    .opacity(bandAlpha * 0.90)
+                    .opacity(bandAlpha * 0.92)
 
                 // 5. Character Backlight Halo (Vầng hào quang hình cầu phát sáng sau lưng Mochi)
                 GeometryReader { geo in
-                    let haloX = geo.size.width > 220 ? 62.0 : geo.size.width * 0.22
-                    let haloY = geo.size.height * 0.50
+                    let isChatView = state.view == .prompt || state.view == .searching || state.view == .result
+                    // Trong prompt/chat card, Mochi nằm ở tọa độ avatar cố định (56, 56)
+                    let haloX: CGFloat = isChatView ? 56.0 : (geo.size.width > 220 ? 58.0 : geo.size.width * 0.22)
+                    let haloY: CGFloat = (isChatView || geo.size.height > 110) ? 56.0 : (geo.size.height * 0.50)
                     let haloBreath = sin(time * 1.5) * 0.04
-                    let haloSize: CGFloat = 118.0 * (1.0 + CGFloat(haloBreath))
-                    let haloOpacity = 0.58 + surge * 0.18 + haloBreath
+                    let haloSize: CGFloat = 118.0 * (1.0 + CGFloat(haloBreath) + CGFloat(surge) * 0.06)
+                    let haloOpacity = min(0.92, 0.55 + CGFloat(surge) * 0.22 + CGFloat(haloBreath))
 
                     Circle()
                         .fill(
@@ -4673,20 +4700,24 @@ struct CardBackgroundLayer: View {
                             stops: [
                                 .init(color: Color.white.opacity(0.12), location: 0.0),
                                 .init(color: Color.white.opacity(0.04), location: 0.50),
-                                .init(color: secondaryGlowColor.opacity(0.20 + surge * 0.25), location: 1.0)
+                                .init(color: secondaryGlowColor.opacity(0.20 + CGFloat(surge) * 0.22), location: 1.0)
                             ],
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing
                         ),
-                        lineWidth: 0.85
+                        lineWidth: 1.0
                     )
             }
-        }
-        .onChange(of: state.effectiveState) { _ in
-            lastTransitionTime = Date().timeIntervalSinceReferenceDate
-        }
-        .onChange(of: state.view) { _ in
-            lastTransitionTime = Date().timeIntervalSinceReferenceDate
+            .contentShape(RoundedRectangle(cornerRadius: cardRadius, style: .continuous))
+            .onHover { hovering in
+                isCardHovered = hovering
+                if hovering { triggerSurge() }
+            }
+            .onChange(of: state.effectiveState) { _, _ in triggerSurge() }
+            .onChange(of: state.view) { _, _ in triggerSurge() }
+            .onChange(of: state.isBotHovered) { _, hovering in if hovering { triggerSurge() } }
+            .onChange(of: state.chatHistory.count) { _, _ in triggerSurge() }
+            .onChange(of: state.stateOverride) { _, _ in triggerSurge() }
         }
     }
 }
