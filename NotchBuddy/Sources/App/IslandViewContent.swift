@@ -4541,7 +4541,6 @@ struct CardBackgroundLayer: View {
     let secondaryGlowColor: Color
     @ObservedObject private var state: AppState = AppState.shared
     @State private var lastTransitionTime: Double = Date().timeIntervalSinceReferenceDate
-    @State private var isCardHovered: Bool = false
 
     private func triggerSurge() {
         lastTransitionTime = Date().timeIntervalSinceReferenceDate
@@ -4554,7 +4553,7 @@ struct CardBackgroundLayer: View {
             let surgeDuration: Double = 1.20
             let isSurging = elapsed < surgeDuration
 
-            // Phản hồi tương tác: tăng tốc spring nhẹ (~0.24s) rồi dịu êm về trạng thái nghỉ
+            // Phản hồi khi Coucou chuyển state: tăng tốc spring nhẹ (~0.24s) rồi dịu êm về trạng thái nghỉ
             let surge: Double = {
                 guard isSurging else { return 0.0 }
                 let p = elapsed / surgeDuration // 0.0 -> 1.0
@@ -4571,19 +4570,19 @@ struct CardBackgroundLayer: View {
 
             // "từ vị trí hiện tại dài ra 1 chút":
             // Vị trí hiện tại (idle): bám đều mép đáy và bo qua 2 góc cong đáy [0.07, 0.93]
-            // Khi tương tác: từ vị trí hiện tại dài thêm ra 2 bên mép lên tới [0.00, 1.00]
-            let lengthDelta: CGFloat = 0.07 * CGFloat(surge) + (isCardHovered ? 0.03 : 0.0)
+            // Khi Coucou chuyển state: từ vị trí hiện tại dài thêm ra 2 bên mép lên tới [0.00, 1.00]
+            let lengthDelta: CGFloat = 0.07 * CGFloat(surge)
             let trimStart: CGFloat = max(0.0, 0.07 - lengthDelta)
             let trimEnd: CGFloat = min(1.0, 0.93 + lengthDelta)
 
-            // "to ra 1 chút": bề dày của dải và độ tỏa blur nở rộng khi có tương tác
-            let widthGrowth: CGFloat = 12.0 * CGFloat(surge) + (isCardHovered ? 5.0 : 0.0)
+            // "to ra 1 chút": bề dày của dải và độ tỏa blur nở rộng khi Coucou chuyển state
+            let widthGrowth: CGFloat = 12.0 * CGFloat(surge)
             let coreWidth: CGFloat = 22.0 + widthGrowth
             let diffWidth: CGFloat = 44.0 + widthGrowth * 1.5
             let filamentWidth: CGFloat = 3.0 + widthGrowth * 0.1
 
-            // "sáng ra 1 chút": phát sáng bừng lên khi có tương tác rồi dịu về mức nghỉ
-            let alphaBoost: CGFloat = 0.35 * CGFloat(surge) + (isCardHovered ? 0.10 : 0.0)
+            // "sáng ra 1 chút": phát sáng bừng lên khi Coucou chuyển state rồi dịu về mức nghỉ
+            let alphaBoost: CGFloat = 0.35 * CGFloat(surge)
             let bandAlpha: CGFloat = min(0.96, 0.48 + CGFloat(idleBreath) + alphaBoost)
 
             ZStack {
@@ -4709,15 +4708,8 @@ struct CardBackgroundLayer: View {
                     )
             }
             .contentShape(RoundedRectangle(cornerRadius: cardRadius, style: .continuous))
-            .onHover { hovering in
-                isCardHovered = hovering
-                if hovering { triggerSurge() }
-            }
             .onChange(of: state.effectiveState) { _, _ in triggerSurge() }
             .onChange(of: state.view) { _, _ in triggerSurge() }
-            .onChange(of: state.isBotHovered) { _, hovering in if hovering { triggerSurge() } }
-            .onChange(of: state.chatHistory.count) { _, _ in triggerSurge() }
-            .onChange(of: state.stateOverride) { _, _ in triggerSurge() }
         }
     }
 }
