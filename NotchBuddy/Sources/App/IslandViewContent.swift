@@ -4498,7 +4498,42 @@ private func drawOutfitIcon(context: GraphicsContext, size: CGSize, outfit: Outf
 
 // MARK: - Card background
 
-// MARK: - Multi-Layer Optical Card Background (Grokbot Bilateral Saddle Wave)
+// MARK: - Bottom Edge Contour Shape (Dải bám theo mép đáy và bo cong theo góc card)
+
+struct BottomEdgeBandShape: Shape {
+    let radius: CGFloat
+
+    func path(in rect: CGRect) -> Path {
+        var p = Path()
+        let w = rect.width
+        let h = rect.height
+        let r = min(radius, h / 2)
+        guard w > 0, h > 0 else { return p }
+
+        // Bắt đầu từ mép biên trái phía trên góc bo đáy
+        p.move(to: CGPoint(x: 0, y: max(0, h - r * 2.2)))
+        // Bo tròn mượt mà quanh góc bo đáy trái
+        p.addArc(
+            tangent1End: CGPoint(x: 0, y: h),
+            tangent2End: CGPoint(x: r, y: h),
+            radius: r
+        )
+        // Đoạn thẳng chạy ngang mép đáy ("1 dải thẳng")
+        p.addLine(to: CGPoint(x: w - r, y: h))
+        // Bo tròn mượt mà quanh góc bo đáy phải ("có độ curve bám theo mép card")
+        p.addArc(
+            tangent1End: CGPoint(x: w, y: h),
+            tangent2End: CGPoint(x: w, y: max(0, h - r * 2.2)),
+            radius: r
+        )
+        // Đi lên mép biên phải
+        p.addLine(to: CGPoint(x: w, y: max(0, h - r * 2.2)))
+
+        return p
+    }
+}
+
+// MARK: - Multi-Layer Optical Card Background (Bottom Contour Ribbon)
 
 struct CardBackgroundLayer: View {
     let cardRadius: CGFloat
@@ -4511,7 +4546,7 @@ struct CardBackgroundLayer: View {
         TimelineView(.animation(paused: state.mode != .expanded)) { tl in
             let time = tl.date.timeIntervalSinceReferenceDate
             let elapsed = time - lastTransitionTime
-            let surgeDuration: Double = 1.20
+            let surgeDuration: Double = 1.15
             let isSurging = elapsed < surgeDuration
 
             // Normalized transition progress p: 0.0 -> 1.0
@@ -4519,16 +4554,15 @@ struct CardBackgroundLayer: View {
             let ease = isSurging ? (1.0 - pow(1.0 - p, 3.0)) : 1.0
             let surge = isSurging ? sin(p * .pi) : 0.0
 
-            // Hơi thở hữu cơ nhẹ nhàng khi idle (dao động chậm, êm dịu)
+            // Hơi thở hữu cơ nhẹ nhàng khi idle
             let idleBreath = sin(time * 0.85) * 0.035
-            let leftBreath = sin(time * 0.90) * 0.04
-            let rightBreath = cos(time * 0.80) * 0.04
 
-            // Độ mở rộng khi chuyển state: từ đáy dàn năng lượng mạnh ra 2 mỏm sóng biên
-            let surgeSpread = CGFloat(surge) * 35.0
+            // Độ mở rộng của dải sáng: khi chuyển state, từ giữa (0.08) dàn nhanh ra 2 bên (0.50)
+            let spread = isSurging ? (0.08 + CGFloat(ease) * 0.42) : 0.50
+            let bandAlpha = 0.62 + idleBreath + surge * 0.25
 
             ZStack {
-                // 1. Deep Obsidian Base Plate (Nền đen OLED sâu chuẩn ảnh gốc)
+                // 1. Deep Obsidian Base Plate (Nền đen OLED sâu chuẩn gốc)
                 RoundedRectangle(cornerRadius: cardRadius, style: .continuous)
                     .fill(
                         LinearGradient(
@@ -4541,71 +4575,69 @@ struct CardBackgroundLayer: View {
                         )
                     )
 
-                // 2. Bottom Center Valley (Vùng trũng đáy nối 2 mỏm sóng, lặn sâu ở giữa để không che chữ)
-                RoundedRectangle(cornerRadius: cardRadius, style: .continuous)
-                    .fill(
-                        RadialGradient(
-                            gradient: Gradient(stops: [
-                                .init(color: effectiveBloomColor.opacity(0.34 + idleBreath + surge * 0.20), location: 0),
-                                .init(color: effectiveBloomColor.opacity(0.12), location: 0.40),
-                                .init(color: .clear, location: 0.78)
-                            ]),
-                            center: UnitPoint(x: 0.50, y: 1.26),
-                            startRadius: 0,
-                            endRadius: 260 + CGFloat(ease) * 40
-                        )
+                // 2. Lớp tỏa sáng mềm rộng (Soft Ambient Diffusion ôm mép đáy)
+                BottomEdgeBandShape(radius: cardRadius)
+                    .trim(from: max(0, 0.50 - spread), to: min(1, 0.50 + spread))
+                    .stroke(
+                        LinearGradient(
+                            colors: [effectiveBloomColor.opacity(0.85), secondaryGlowColor.opacity(0.85)],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        ),
+                        style: StrokeStyle(lineWidth: 54, lineCap: .round, lineJoin: .round)
                     )
+                    .blur(radius: 24)
+                    .clipShape(RoundedRectangle(cornerRadius: cardRadius, style: .continuous))
                     .blendMode(.plusLighter)
+                    .opacity(bandAlpha * 0.55)
 
-                // 3. Left Wave Crest (Mỏm sóng bên trái dâng cao ôm trọn và tỏa sáng dưới Mochi)
-                RoundedRectangle(cornerRadius: cardRadius, style: .continuous)
-                    .fill(
-                        RadialGradient(
-                            gradient: Gradient(stops: [
-                                .init(color: effectiveBloomColor.opacity(0.52 + leftBreath + surge * 0.22), location: 0),
-                                .init(color: effectiveBloomColor.opacity(0.24 + surge * 0.10), location: 0.42),
-                                .init(color: effectiveBloomColor.opacity(0.06), location: 0.72),
-                                .init(color: .clear, location: 0.95)
-                            ]),
-                            center: UnitPoint(x: 0.16, y: 0.60),
-                            startRadius: 0,
-                            endRadius: 185 + surgeSpread
-                        )
+                // 3. Dải quang phổ chính bám mép đáy và bo cong theo góc card (Core Luminous Band)
+                BottomEdgeBandShape(radius: cardRadius)
+                    .trim(from: max(0, 0.50 - spread), to: min(1, 0.50 + spread))
+                    .stroke(
+                        LinearGradient(
+                            colors: [effectiveBloomColor, secondaryGlowColor],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        ),
+                        style: StrokeStyle(lineWidth: 26, lineCap: .round, lineJoin: .round)
                     )
+                    .blur(radius: 12)
+                    .clipShape(RoundedRectangle(cornerRadius: cardRadius, style: .continuous))
                     .blendMode(.plusLighter)
+                    .opacity(bandAlpha * 0.82)
 
-                // 4. Right Wave Crest (Mỏm sóng bên phải dâng cao ôm góc phải bằng màu phụ đối trọng)
-                RoundedRectangle(cornerRadius: cardRadius, style: .continuous)
-                    .fill(
-                        RadialGradient(
-                            gradient: Gradient(stops: [
-                                .init(color: secondaryGlowColor.opacity(0.46 + rightBreath + surge * 0.20), location: 0),
-                                .init(color: secondaryGlowColor.opacity(0.22 + surge * 0.08), location: 0.42),
-                                .init(color: secondaryGlowColor.opacity(0.05), location: 0.72),
-                                .init(color: .clear, location: 0.95)
-                            ]),
-                            center: UnitPoint(x: 0.88, y: 0.64),
-                            startRadius: 0,
-                            endRadius: 175 + surgeSpread
-                        )
+                // 4. Viền bắt sáng sắc nét mép trong (Inner Edge Filament)
+                BottomEdgeBandShape(radius: cardRadius)
+                    .trim(from: max(0, 0.50 - spread), to: min(1, 0.50 + spread))
+                    .stroke(
+                        LinearGradient(
+                            colors: [effectiveBloomColor, secondaryGlowColor],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        ),
+                        style: StrokeStyle(lineWidth: 3.5, lineCap: .round, lineJoin: .round)
                     )
+                    .blur(radius: 2)
+                    .clipShape(RoundedRectangle(cornerRadius: cardRadius, style: .continuous))
                     .blendMode(.plusLighter)
+                    .opacity(bandAlpha * 0.90)
 
-                // 5. Character Backlight Halo (Vầng hào quang phát sáng hình cầu trực tiếp sau đầu Mochi)
+                // 5. Character Backlight Halo (Vầng hào quang hình cầu phát sáng sau lưng Mochi)
                 GeometryReader { geo in
                     let haloX = geo.size.width > 220 ? 62.0 : geo.size.width * 0.22
                     let haloY = geo.size.height * 0.50
                     let haloBreath = sin(time * 1.5) * 0.04
-                    let haloSize: CGFloat = 120.0 * (1.0 + CGFloat(haloBreath))
-                    let haloOpacity = 0.60 + surge * 0.18 + haloBreath
+                    let haloSize: CGFloat = 118.0 * (1.0 + CGFloat(haloBreath))
+                    let haloOpacity = 0.58 + surge * 0.18 + haloBreath
 
                     Circle()
                         .fill(
                             RadialGradient(
                                 gradient: Gradient(stops: [
-                                    .init(color: Color.white.opacity(0.32), location: 0),
+                                    .init(color: Color.white.opacity(0.35), location: 0),
                                     .init(color: effectiveBloomColor.opacity(haloOpacity), location: 0.35),
-                                    .init(color: effectiveBloomColor.opacity(haloOpacity * 0.30), location: 0.68),
+                                    .init(color: effectiveBloomColor.opacity(haloOpacity * 0.28), location: 0.68),
                                     .init(color: .clear, location: 0.90)
                                 ]),
                                 center: .center,
@@ -4641,7 +4673,7 @@ struct CardBackgroundLayer: View {
                             stops: [
                                 .init(color: Color.white.opacity(0.12), location: 0.0),
                                 .init(color: Color.white.opacity(0.04), location: 0.50),
-                                .init(color: effectiveBloomColor.opacity(0.18 + surge * 0.25), location: 1.0)
+                                .init(color: secondaryGlowColor.opacity(0.20 + surge * 0.25), location: 1.0)
                             ],
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing
